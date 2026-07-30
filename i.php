@@ -11,7 +11,15 @@
 declare(strict_types=1);
 require __DIR__ . '/lib/embed.php';
 
-$data = rg_token_decode((string) ($_GET['c'] ?? ''));
+/* Canonical form is /i/<token>.gif (rewritten to ?c=<token>). PATH_INFO is
+   accepted too so /i.php/<token>.gif works where no rewrite is configured —
+   the built-in PHP server and plain mod_php both hand us that for free. */
+$token = (string) ($_GET['c'] ?? '');
+if ($token === '' && isset($_SERVER['PATH_INFO'])) {
+    $token = preg_replace('/\.(gif|png)$/i', '', ltrim($_SERVER['PATH_INFO'], '/')) ?? '';
+}
+
+$data = rg_token_decode($token);
 if ($data === null) {
     http_response_code(404);
     header('Content-Type: text/plain');

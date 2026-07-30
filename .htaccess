@@ -1,0 +1,27 @@
+# Pretty image URLs: /i/<token>.gif -> i.php?c=<token>
+#
+# The extension is what makes Discord (and Slack, Telegram, iMessage) treat the
+# link as an image and render it inline and animated. Point them at a .php URL
+# instead and they fetch it as a page, which turns the card into a bordered
+# rich-embed block with a static thumbnail.
+#
+# NOTE: the vhost that install.sh writes sets AllowOverride None, so in
+# production these rules come from the vhost, not from here. This file is for
+# development (XAMPP defaults to AllowOverride All) and for hand-rolled
+# deployments that do allow overrides.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Tokens are base64url from rg_token_encode(), so the charset is fixed.
+    RewriteRule ^i/([A-Za-z0-9_-]+)\.(gif|png)$ i.php?c=$1 [L,QSA]
+</IfModule>
+
+# Runtime state: instance secret, stored embed images, rate-limit buckets.
+<IfModule mod_authz_core.c>
+    <FilesMatch "^\.">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+
+RedirectMatch 404 ^/(.*/)?storage/

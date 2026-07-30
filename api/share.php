@@ -112,8 +112,13 @@ $token = rg_token_encode([
     'x' => $expires,
 ]);
 
+/* `url` is what the user copies, so it's the direct image link: chat clients
+   only render a link inline and animated when the path itself looks like an
+   image. `page` keeps the human-facing card page available for anywhere that
+   wants the title and flavour text alongside it. */
 rg_json(200, [
-    'url'     => rg_base_url() . '/e.php?c=' . $token,
+    'url'     => rg_image_url($token, $mime),
+    'page'    => rg_base_url() . '/e.php?c=' . $token,
     'token'   => $token,
     'expires' => $expires,
 ]);

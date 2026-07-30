@@ -368,6 +368,23 @@ function rg_base_url(): string
 }
 
 /**
+ * Direct URL to the card image.
+ *
+ * The extension is load-bearing, not decoration. Chat clients decide how to
+ * unfurl a link from its path: a URL ending in .gif is treated as an image and
+ * rendered inline and animated, while anything else (including i.php?c=…) is
+ * fetched as a page, and a page carrying og:title/og:description becomes a
+ * bordered rich-embed card with a flattened still for a picture.
+ *
+ * Needs the rewrite in .htaccess / the vhost — see install.sh.
+ */
+function rg_image_url(string $token, string $mime = 'image/gif'): string
+{
+    $ext = $mime === 'image/png' ? 'png' : 'gif';
+    return rg_base_url() . '/i/' . $token . '.' . $ext;
+}
+
+/**
  * Link-preview crawlers must be able to read the embed without spending its
  * single use — otherwise Discord's unfurler burns the link before any human
  * sees it.

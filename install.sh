@@ -315,6 +315,13 @@ if [[ "$SERVER" == "apache" ]]; then
         # Rules live here rather than in .htaccess, so AllowOverride stays off.
         AllowOverride None
         Require all granted
+
+        # Pretty image URLs: /i/<token>.gif -> i.php?c=<token>
+        # The .gif extension is what makes chat clients render the card inline
+        # and animated instead of unfurling it as a rich-embed card with a
+        # static thumbnail. Tokens are base64url, hence the charset.
+        RewriteEngine On
+        RewriteRule ^i/([A-Za-z0-9_-]+)\.(gif|png)\$ i.php?c=\$1 [L,QSA]
     </Directory>
 
     # Instance secret, stored embed images and rate-limit buckets.
@@ -361,6 +368,14 @@ server {
     # Instance secret, stored embed images and rate-limit buckets.
     location ^~ /storage/ { deny all; return 404; }
     location ~ /\\.       { deny all; return 404; }
+
+    # Pretty image URLs: /i/<token>.gif -> i.php?c=<token>
+    # The .gif extension is what makes chat clients render the card inline and
+    # animated instead of unfurling it as a rich-embed card with a static
+    # thumbnail. Tokens are base64url, hence the charset.
+    location ~ ^/i/([A-Za-z0-9_-]+)\\.(gif|png)\$ {
+        rewrite ^/i/([A-Za-z0-9_-]+)\\.(gif|png)\$ /i.php?c=\$1 last;
+    }
 
     location / {
         try_files \$uri \$uri/ =404;
