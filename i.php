@@ -16,7 +16,7 @@ require __DIR__ . '/lib/embed.php';
    the built-in PHP server and plain mod_php both hand us that for free. */
 $token = (string) ($_GET['c'] ?? '');
 if ($token === '' && isset($_SERVER['PATH_INFO'])) {
-    $token = preg_replace('/\.(gif|png)$/i', '', ltrim($_SERVER['PATH_INFO'], '/')) ?? '';
+    $token = preg_replace('/\.(gif|png|mp4)$/i', '', ltrim($_SERVER['PATH_INFO'], '/')) ?? '';
 }
 
 $data = rg_token_decode($token);
@@ -45,7 +45,12 @@ if ($rec === null || !empty($rec['retired']) || !is_file($path)) {
     exit('This card image has expired');
 }
 
-$mime = ($rec['mime'] ?? 'image/gif') === 'image/png' ? 'image/png' : 'image/gif';
+// allow-list rather than echoing the stored value straight into a header
+$mime = match ($rec['mime'] ?? '') {
+    'video/mp4' => 'video/mp4',
+    'image/png' => 'image/png',
+    default     => 'image/gif',
+};
 $etag = '"' . substr(hash_file('sha256', $path), 0, 32) . '"';
 
 header('Content-Type: ' . $mime);

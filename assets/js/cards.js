@@ -321,39 +321,46 @@ window.RG = window.RG || {};
     }
     if (exporting) return;
 
-    // Everything ships as an animated GIF now, and every card is stamped with
-    // the owner's signature — so make sure there is one before rendering.
+    // Every card is stamped with the owner's signature, so make sure there is
+    // one before rendering.
     if (!(await RG.requireSignature())) return;
 
     exporting = true;
 
-    // 80 frames at ~7MB takes a couple of seconds; show progress rather than
-    // leaving the menu looking like it swallowed the click
-    const build = () => {
+    /* Two formats, on purpose. Embeds go out as H.264 — about a fifth of the
+       bytes of the same frames as GIF, which is the difference between a card
+       appearing instantly in chat and visibly streaming in. Save-to-disk stays
+       GIF, because that's the file you can drop anywhere without thinking.
+       Browsers without WebCodecs fall back to GIF for both. */
+    const embedFmt = (RG.mp4 && RG.mp4.supported()) ? 'mp4' : 'gif';
+
+    const build = fmt => {
       RG.toast('Rendering card…');
-      return RG.exporter.toGifBlob(card, rankKey, {
-        onProgress: p => RG.toast(`Rendering card… ${Math.round(p * 100)}%`),
-      });
+      const opts = { onProgress: p => RG.toast(`Rendering card… ${Math.round(p * 100)}%`) };
+      return fmt === 'mp4'
+        ? RG.exporter.toMp4Blob(card, rankKey, opts)
+        : RG.exporter.toGifBlob(card, rankKey, opts);
     };
 
     try {
       if (act === 'link') {
-        const blob = await build();
+        const blob = await build(embedFmt);
         RG.toast('Minting embed link…');
-        const url = await RG.share.mint(card, rank, blob, 'gif');
+        const url = await RG.share.mint(card, rank, blob, embedFmt);
         if (await RG.copyText(url)) RG.toast('Embed link copied — paste it in Discord 🔗');
         else RG.promptLink(url);   // never strand a link we've already minted
       } else if (act === 'save') {
-        const blob = await build();
+        const blob = await build('gif');
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = RG.exporter.filename(card, rankKey);
+        a.download = RG.exporter.filename(card, rankKey, 'gif');
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 4000);
         RG.toast(`Saved “${card.title}” 🎞️`);
       } else if (act === 'share') {
-        const blob = await build();
-        const file = new File([blob], RG.exporter.filename(card, rankKey), { type: 'image/gif' });
+        const blob = await build(embedFmt);
+        const file = new File([blob], RG.exporter.filename(card, rankKey, embedFmt),
+                             { type: blob.type });
         if (navigator.canShare && !navigator.canShare({ files: [file] })) {
           await navigator.share({ title: card.title, text: card.usage });
         } else {

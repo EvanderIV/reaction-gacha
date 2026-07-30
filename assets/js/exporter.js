@@ -24,6 +24,11 @@ RG.exporter = (() => {
      compensate (the loop keeps its requested duration either way). */
   const MAX_FRAMES = 80;
 
+  /* H.264 needs roughly a fifth of GIF's bytes for the same frames, so size
+     stops being the binding constraint and quality becomes the dial. 2 Mbps
+     holds up on the foil gradients, which are what banding shows on first. */
+  const MP4_BITRATE = 2_000_000;
+
   /* Cards render natively at 750px wide, so 640 is close to 1:1 while landing
      the heaviest rarities (cosmic / full art) right around TARGET_BYTES. */
   const DEFAULT_WIDTH = 640;
@@ -911,7 +916,38 @@ RG.exporter = (() => {
   }
 
 
-  const filename = (card, rankKey) => `${card.id}-${rankKey}.gif`;
+  /**
+   * Render the card as an H.264 MP4.
+   *
+   * Shares the whole pipeline with toGifBlob down to renderTimeline — only the
+   * final compression differs. No size-reduction retry loop here: bitrate is a
+   * direct dial on file size, unlike GIF where the only lever was resolution,
+   * so one pass always lands in range.
+   */
+  async function toMp4Blob(card, rankKey, opts = {}) {
+    if (!RG.mp4 || !RG.mp4.supported()) {
+      throw new Error('This browser cannot encode MP4');
+    }
+    const loopSeconds = opts.loopSeconds ?? LOOP_SECONDS;
+    const fps         = opts.fps ?? FPS;
+    // Video shares far more between frames than GIF, so the narrower width for
+    // moving art earns nothing here — everything renders at full size.
+    const width       = opts.width ?? DEFAULT_WIDTH;
 
-  return { render, toGifBlob, animatable, filename, TARGET_BYTES, MAX_BYTES };
+    const timeline = await buildTimeline(card, rankKey, {
+      loopSeconds, fps, maxFrames: opts.maxFrames,
+    });
+    const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress);
+
+    return RG.mp4.encode(rendered, {
+      bitrate: opts.bitrate ?? MP4_BITRATE,
+      matte: opts.matte,
+      onProgress: opts.onProgress,
+    });
+  }
+
+  const filename = (card, rankKey, ext = 'gif') => `${card.id}-${rankKey}.${ext}`;
+
+  return { render, toGifBlob, toMp4Blob, animatable, filename,
+           TARGET_BYTES, MAX_BYTES, MP4_BITRATE };
 })();

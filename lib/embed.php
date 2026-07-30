@@ -380,8 +380,60 @@ function rg_base_url(): string
  */
 function rg_image_url(string $token, string $mime = 'image/gif'): string
 {
-    $ext = $mime === 'image/png' ? 'png' : 'gif';
-    return rg_base_url() . '/i/' . $token . '.' . $ext;
+    return rg_base_url() . '/i/' . $token . '.' . rg_mime_ext($mime);
+}
+
+/** Canonical file extension for a stored embed's mime type. */
+function rg_mime_ext(string $mime): string
+{
+    return match ($mime) {
+        'video/mp4' => 'mp4',
+        'image/png' => 'png',
+        default     => 'gif',
+    };
+}
+
+/**
+ * Width and height of an MP4, read from the first video track's tkhd box.
+ *
+ * We parse rather than trust the uploader for the same reason we parse GIF and
+ * PNG headers: the dimensions go straight into og:image:width, and a client
+ * that lies there can distort every unfurl of the link.
+ *
+ * Returns [0, 0] when there's no usable video track.
+ */
+function rg_mp4_dimensions(string $bytes): array
+{
+    $len = strlen($bytes);
+
+    // Walk the box tree, descending only into the containers on the path to
+    // tkhd. Boxes are [uint32 size][4cc type][payload].
+    $walk = function (int $start, int $end) use (&$walk, $bytes): array {
+        $off = $start;
+        while ($off + 8 <= $end) {
+            $size = unpack('N', substr($bytes, $off, 4))[1];
+            $type = substr($bytes, $off + 4, 4);
+            if ($size === 0) $size = $end - $off;          // extends to end of file
+            if ($size === 1) return [0, 0];                // 64-bit sizes: not ours
+            if ($size < 8 || $off + $size > $end) return [0, 0];
+
+            if ($type === 'moov' || $type === 'trak') {
+                $found = $walk($off + 8, $off + $size);
+                if ($found[0] > 0) return $found;
+            } elseif ($type === 'tkhd') {
+                $version = ord($bytes[$off + 8]);
+                // width/height are the last two fields: 16.16 fixed point
+                $w = unpack('N', substr($bytes, $off + $size - 8, 4))[1] >> 16;
+                $h = unpack('N', substr($bytes, $off + $size - 4, 4))[1] >> 16;
+                // a sound track carries 0x0 here, so skip it and keep looking
+                if ($w > 0 && $h > 0 && $version <= 1) return [$w, $h];
+            }
+            $off += $size;
+        }
+        return [0, 0];
+    };
+
+    return $walk(0, $len);
 }
 
 /**

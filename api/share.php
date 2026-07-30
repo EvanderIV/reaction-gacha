@@ -69,8 +69,9 @@ if (($file['size'] ?? 0) <= 0 || $file['size'] > RG_MAX_IMG) {
 $bytes = (string) file_get_contents($file['tmp_name']);
 $magicGif = str_starts_with($bytes, 'GIF87a') || str_starts_with($bytes, 'GIF89a');
 $magicPng = str_starts_with($bytes, "\x89PNG\r\n\x1a\n");
-if (!$magicGif && !$magicPng) {
-    rg_json(415, ['error' => 'Only GIF or PNG accepted']);
+$magicMp4 = substr($bytes, 4, 4) === 'ftyp';
+if (!$magicGif && !$magicPng && !$magicMp4) {
+    rg_json(415, ['error' => 'Only GIF, PNG or MP4 accepted']);
 }
 
 // pull real dimensions out of the header rather than trusting the client
@@ -78,10 +79,16 @@ if ($magicGif) {
     $w = unpack('v', substr($bytes, 6, 2))[1];
     $h = unpack('v', substr($bytes, 8, 2))[1];
     $mime = 'image/gif';
-} else {
+} elseif ($magicPng) {
     $w = unpack('N', substr($bytes, 16, 4))[1];
     $h = unpack('N', substr($bytes, 20, 4))[1];
     $mime = 'image/png';
+} else {
+    [$w, $h] = rg_mp4_dimensions($bytes);
+    if ($w === 0) {
+        rg_json(415, ['error' => 'Unreadable MP4 — no video track found']);
+    }
+    $mime = 'video/mp4';
 }
 if ($w < 1 || $h < 1 || $w > 4000 || $h > 4000) {
     rg_json(400, ['error' => 'Bad image dimensions']);

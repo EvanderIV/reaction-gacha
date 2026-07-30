@@ -56,6 +56,7 @@ if (rg_image_expired($rec)) {
     $rec = rg_record_load($jti) ?? $rec;
 }
 $hasImage = empty($rec['retired']) && is_file(rg_image_path($jti));
+$isVideo  = ($rec['mime'] ?? '') === 'video/mp4';
 
 $cards = rg_cards();
 $card  = $cards[$data['c']] ?? null;
@@ -75,7 +76,9 @@ $type  = $theme === 'mtg'
     ? ($types['mtypes'][$card['mtype']] ?? ['name' => '—', 'sym' => '◈', 'color' => '#888'])
     : ($types['ptypes'][$card['ptype']] ?? ['name' => '—', 'sym' => '⭐', 'color' => '#888']);
 
-$imgUrl = rg_base_url() . '/i.php?c=' . rawurlencode($token);
+/* Extension-bearing URL: chat clients and players both key off it, and
+   og:video pointing at a .php path gets treated with suspicion. */
+$imgUrl = rg_image_url($token, $rec['mime'] ?? 'image/gif');
 
 /* ---- the single use ---- */
 $isCrawler = rg_is_crawler();
@@ -103,6 +106,14 @@ $h = fn(?string $s): string => htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'
 <meta property="og:title" content="<?= $h($card['title']) ?> — <?= $h($rankName) ?>">
 <meta property="og:description" content="<?= $h($card['usage']) ?>">
 <?php if ($hasImage): /* omit once retired so a fresh unfurl isn't a broken image */ ?>
+<?php if ($isVideo): /* an mp4 in og:image is just a broken picture */ ?>
+<meta property="og:video" content="<?= $h($imgUrl) ?>">
+<meta property="og:video:secure_url" content="<?= $h($imgUrl) ?>">
+<meta property="og:video:type" content="video/mp4">
+<meta property="og:video:width" content="<?= (int) ($rec['w'] ?? 0) ?>">
+<meta property="og:video:height" content="<?= (int) ($rec['h'] ?? 0) ?>">
+<meta name="twitter:card" content="player">
+<?php else: ?>
 <meta property="og:image" content="<?= $h($imgUrl) ?>">
 <meta property="og:image:type" content="<?= $h($rec['mime'] ?? 'image/gif') ?>">
 <meta property="og:image:width" content="<?= (int) ($rec['w'] ?? 0) ?>">
@@ -110,6 +121,7 @@ $h = fn(?string $s): string => htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'
 <meta property="og:image:alt" content="<?= $h($card['title']) ?> reaction card">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="<?= $h($imgUrl) ?>">
+<?php endif; ?>
 <?php else: ?>
 <meta name="twitter:card" content="summary">
 <?php endif; ?>
@@ -132,8 +144,14 @@ $h = fn(?string $s): string => htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'
 
   <?php if ($hasImage): ?>
     <figure class="embed-card">
-      <img src="<?= $h($imgUrl) ?>" alt="<?= $h($card['title']) ?>"
-           width="<?= (int) ($rec['w'] ?? 0) ?>" height="<?= (int) ($rec['h'] ?? 0) ?>">
+      <?php if ($isVideo): /* autoplay muted+looping so it reads like a GIF */ ?>
+        <video src="<?= $h($imgUrl) ?>" autoplay muted loop playsinline
+               width="<?= (int) ($rec['w'] ?? 0) ?>" height="<?= (int) ($rec['h'] ?? 0) ?>"
+               aria-label="<?= $h($card['title']) ?>"></video>
+      <?php else: ?>
+        <img src="<?= $h($imgUrl) ?>" alt="<?= $h($card['title']) ?>"
+             width="<?= (int) ($rec['w'] ?? 0) ?>" height="<?= (int) ($rec['h'] ?? 0) ?>">
+      <?php endif; ?>
     </figure>
   <?php else: ?>
     <figure class="embed-card embed-card-gone" aria-label="Image expired">

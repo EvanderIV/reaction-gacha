@@ -121,33 +121,74 @@ material necessarily lives client-side. Clear site data to wipe your collection.
 
 ### Export
 
-Every export is one format: an **animated GIF**, ~640px wide, 80 frames at
-20 fps, one 4-second foil loop, tuned to land near 7 MB (Discord's ceiling is
-10 MB). Cards whose art is itself an animated GIF have that loop repeated to
-fill the same 4 seconds, so art and foil stay seamless together.
+Two formats, chosen by destination:
 
-Foil animation and cosmic twinkle loop seamlessly; rounded corners export
-transparent. Encoding takes ~2–3 s per card and reports progress. Tuning
-constants live at the top of [assets/js/exporter.js](assets/js/exporter.js) —
-if a card overshoots the 9 MB hard cap the width is scaled down and re-encoded
-rather than failing.
+| Path | Format | Typical size | Why |
+|---|---|---|---|
+| Embed link, share | **H.264 MP4** | ~0.9–1.0 MB | 5–7× smaller, so it loads instantly in chat |
+| Save to disk | **Animated GIF** | ~4.7–6.8 MB | the file you can drop anywhere without thinking |
 
-Cards whose art moves on its own start at 500px instead of 640px: consecutive
-frames share much less, so the same width would roughly double the file and
-trigger that re-encode every time.
+Both render 640px wide, 80 frames at 20 fps, one 4-second foil loop, from the
+identical pipeline — only the final compression differs. Cards whose art is
+itself animated have that loop repeated to fill the same 4 seconds, so art and
+foil stay seamless together.
 
-There is no format picker, because **animated images cannot be copy-pasted at
-all** — a browser limitation, not a bug. Chromium re-encodes anything written
-to the clipboard as a still (verified: an APNG written to `image/png` comes
-back with its `acTL`/`fdAT` chunks stripped and a frame count of 1) and rejects
-`image/gif` on write outright. To get animation into Discord, use **embed
-links** below: a link is plain text, which the clipboard handles perfectly.
+**The MP4 has no transparency.** H.264 has no alpha channel, so the rounded
+corners are composited onto a matte, defaulting to Discord's dark message
+background (`#313338`) where it's invisible. On a light background the corners
+show as four small dark notches. The GIF still exports true transparency.
+Override with `RG.mp4.encode(…, { matte })` if you need a different one.
+
+MP4 encoding uses WebCodecs; the muxer in
+[assets/js/mp4.js](assets/js/mp4.js) is written from scratch, same as the GIF
+encoder. It targets Constrained Baseline deliberately — the higher H.264
+profiles emit B-frames, which decouple decode order from presentation order and
+would require a `ctts` table and separate dts/pts for maybe 15% size against a
+format already being beaten by 5×. Browsers without WebCodecs fall back to GIF
+for everything.
+
+Encoding takes ~0.8–1.2 s (MP4) or ~1.4–1.9 s (GIF) per card and reports
+progress. Tuning constants live at the top of
+[assets/js/exporter.js](assets/js/exporter.js). The GIF path scales width down
+and re-encodes if a card overshoots its 9 MB hard cap; the MP4 path needs no
+such retry because bitrate is a direct dial on file size.
+
+GIF exports of self-animating art start at 500px instead of 640px: consecutive
+frames share much less, so the same width would roughly double the file. MP4
+has no such problem and renders everything at full width.
+
+There is no clipboard image copy, because **animated images cannot be
+copy-pasted at all** — a browser limitation, not a bug. Chromium re-encodes
+anything written to the clipboard as a still (verified: an APNG written to
+`image/png` comes back with its `acTL`/`fdAT` chunks stripped and a frame count
+of 1) and rejects `image/gif` on write outright. To get animation into Discord,
+use **embed links** below: a link is plain text, which the clipboard handles
+perfectly.
+
+### Why embed links are direct image URLs
+
+The copied link points straight at the media (`/i/<token>.mp4`), not at a page.
+The extension is load-bearing: chat clients decide how to unfurl a link from
+its path. A URL ending in `.mp4`/`.gif` is rendered inline; anything else is
+fetched as a page, and a page carrying `og:title`/`og:description` becomes a
+bordered rich-embed card with a flattened still for a picture — verified in
+Discord, which is why this changed.
+
+`e.php` still serves the human-facing card page with title, flavour text and
+stats, and `api/share.php` returns it as `page` alongside the media `url`.
+
+The rewrite that makes `/i/<token>.mp4` work is generated into the vhost by
+[install.sh](install.sh); [.htaccess](.htaccess) carries the same rule for
+development. Where no rewrite is available, `/i.php/<token>.mp4` (PATH_INFO)
+resolves identically. **Because the copied link bypasses `e.php`, the
+single-use burn no longer fires** — what remains is the grace-window expiry on
+the media itself.
 
 ## Signatures
 
 Cards are stamped with the owner's nickname, printed bottom-left as
 `Illus. <nickname>` where a real card credits its illustrator. It's burned into
-the exported GIF, so it travels with the image.
+the exported frames, so it travels with the image in either format.
 
 The nickname lives in the encrypted save and appears in the header as your
 signature — hover it and a pencil appears to change it. The first export
