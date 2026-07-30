@@ -327,12 +327,16 @@ window.RG = window.RG || {};
 
     exporting = true;
 
-    /* Two formats, on purpose. Embeds go out as H.264 — about a fifth of the
-       bytes of the same frames as GIF, which is the difference between a card
-       appearing instantly in chat and visibly streaming in. Save-to-disk stays
-       GIF, because that's the file you can drop anywhere without thinking.
-       Browsers without WebCodecs fall back to GIF for both. */
-    const embedFmt = (RG.mp4 && RG.mp4.supported()) ? 'mp4' : 'gif';
+    /* Embeds go out as GIF, despite MP4 being ~5x smaller for identical frames.
+       Tested in Discord: a link whose path ends in .gif renders inline and
+       animated, while the same card as .mp4 renders as a video player with a
+       click-to-play button. The autoplay-and-loop treatment Tenor gets is
+       Discord's provider allowlist, not something a URL or meta tag can opt
+       into, so format is the only lever we have and GIF is the one that works.
+
+       RG.mp4 is still wired up — it's the right choice anywhere that autoplays
+       video, and toMp4Blob() is a one-word change away here. */
+    const embedFmt = 'gif';
 
     const build = fmt => {
       RG.toast('Rendering card…');

@@ -29,6 +29,27 @@ RG.exporter = (() => {
      holds up on the foil gradients, which are what banding shows on first. */
   const MP4_BITRATE = 2_000_000;
 
+  /* Ordered-dither strength in colour levels; 0 disables it.
+     Off by default because it was measured to be the wrong tool for this
+     image. Against a per-frame palette it changed the mean frame-to-frame
+     colour jump from 2.2 to 2.3 — i.e. nothing — while adding 2.2 MB. Against
+     a shared palette it made the jump actively worse (5.9 -> 6.7): dithering
+     can only shuffle error between neighbouring pixels, it cannot conjure
+     colours the palette doesn't contain. Kept as a knob for anyone rendering
+     at a much smaller palette, where it would start to pay. */
+  const DITHER = 0;
+
+  /* Rebuild the palette every N frames (0 = one shared table for the loop).
+     This is what fixes the "morphing instead of moving" look: the foil sweeps
+     the entire hue wheel, so a single 255-colour table has to cover every hue
+     at every luminance across the whole loop and bands hard, with the band
+     edges snapping between frames. Per frame, all 255 entries go on the
+     colours that frame actually has — mean colour jump drops 5.9 -> 2.2.
+     Costs size, because rebuilding the palette shifts colours slightly even in
+     static regions, so the inter-frame diff rewrites more than it otherwise
+     would. Worth it; see encodeGifAt. */
+  const PALETTE_EVERY = 4;
+
   /* Cards render natively at 750px wide, so 640 is close to 1:1 while landing
      the heaviest rarities (cosmic / full art) right around TARGET_BYTES. */
   const DEFAULT_WIDTH = 640;
@@ -540,7 +561,20 @@ RG.exporter = (() => {
     return c;
   }
 
+  /** Cheap content hash of a rendered frame, for spotting identical samples. */
+  function frameFingerprint(c) {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let h = 2166136261;
+    for (let i = 0; i < d.length; i += 997) h = Math.imul(h ^ d[i], 16777619);
+    return h >>> 0;
+  }
+
   function seekTo(video, t) {
+    /* Seeking to where we already are fires no 'seeked' event, so waiting for
+       one would stall until the timeout on every no-op seek (frame 0 always). */
+    if (Math.abs(video.currentTime - t) < 0.001 && video.readyState >= 2) {
+      return Promise.resolve();
+    }
     return new Promise(resolve => {
       let timer = 0;
       const done = () => {
@@ -561,14 +595,36 @@ RG.exporter = (() => {
    * into the foil loop; buildTimeline then repeats it as needed.
    */
   async function decodeVideoFrames(src, windowSec, fps, cap) {
+    /* Buffer the clip and seek a blob: URL rather than the network URL.
+       Seeking a streamed <video> requires the server to honour HTTP Range
+       requests. PHP's built-in dev server doesn't, and Chrome's response is to
+       silently pin currentTime at 0 — every "sample" then returns frame zero
+       and the art exports completely static, with no error anywhere. A blob is
+       in memory and always seekable, whatever the server does. */
+    let objectUrl = null;
+    try {
+      const res = await withTimeout(fetch(src), 15000, 'buffering ' + src);
+      if (res.ok) objectUrl = URL.createObjectURL(await res.blob());
+    } catch (err) {
+      console.warn('Could not buffer', src, '— falling back to streaming', err);
+    }
+
+    try {
+      return await sampleVideo(objectUrl || src, src, windowSec, fps, cap);
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  async function sampleVideo(url, label, windowSec, fps, cap) {
     const video = document.createElement('video');
-    video.src = src;
+    video.src = url;
     video.muted = true;
     video.playsInline = true;
     video.preload = 'auto';
     await withTimeout(new Promise((resolve, reject) => {
       video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error('could not load ' + src));
+      video.onerror = () => reject(new Error('could not load ' + label));
     }), 15000, 'video metadata');
 
     const duration = Number.isFinite(video.duration) && video.duration > 0
@@ -596,6 +652,15 @@ RG.exporter = (() => {
       frames.push({ img: c, ms: delayCs * 10 });
     }
     video.src = '';
+
+    /* Never ship static art in silence. If widely separated samples come back
+       byte-identical the seeks didn't take, which is an environment problem,
+       not a still clip — and the only symptom otherwise is a frozen export. */
+    if (frames.length > 2 &&
+        frameFingerprint(frames[0].img) === frameFingerprint(frames[frames.length >> 1].img)) {
+      console.warn(`Video art ${label} sampled ${frames.length} identical frames — ` +
+                   'the source is not seekable here, so its animation will not export.');
+    }
     return frames;
   }
 
@@ -685,6 +750,26 @@ RG.exporter = (() => {
     });
   }
 
+  /* 8x8 ordered dither threshold map.
+     Ordered rather than error-diffused on purpose. Floyd-Steinberg produces a
+     smoother still image, but its error pattern is recomputed from scratch for
+     every frame, so static areas crawl with noise between frames AND almost
+     every pixel changes, which would destroy the inter-frame redundancy the
+     size optimisation depends on. A fixed threshold map is keyed to pixel
+     position, so an unchanged pixel dithers identically every frame. */
+  const BAYER8 = new Float32Array([
+     0, 32,  8, 40,  2, 34, 10, 42,
+    48, 16, 56, 24, 50, 18, 58, 26,
+    12, 44,  4, 36, 14, 46,  6, 38,
+    60, 28, 52, 20, 62, 30, 54, 22,
+     3, 35, 11, 43,  1, 33,  9, 41,
+    51, 19, 59, 27, 49, 17, 57, 25,
+    15, 47,  7, 39, 13, 45,  5, 37,
+    63, 31, 55, 23, 61, 29, 53, 21,
+  ].map(v => v / 64 - 0.5));
+
+  const clamp255 = v => (v < 0 ? 0 : v > 255 ? 255 : v);
+
   function makeQuantizer(palette) {
     const cache = new Map();
     return (r, g, b) => {
@@ -766,12 +851,23 @@ RG.exporter = (() => {
       for (const ch of 'NETSCAPE2.0') out.push(ch.charCodeAt(0));
       out.push(3, 1, 0, 0, 0);
     }
-    for (const { indices, ms } of frames) {
+    for (const { indices, ms, palette: local } of frames) {
       // GCE: disposal=1 (keep) | transparency flag; index 255 is transparent
       out.push(0x21, 0xF9, 4, 0x05, 0, 0, 255, 0);
       out[out.length - 4] = Math.round(ms / 10) & 255;
       out[out.length - 3] = (Math.round(ms / 10) >> 8) & 255;
-      out.push(0x2C); u16(0); u16(0); u16(w); u16(h); out.push(0); // image descriptor
+
+      out.push(0x2C); u16(0); u16(0); u16(w); u16(h);
+      if (local) {
+        // local colour table follows: flag | size 7 => 2^(7+1) = 256 entries
+        out.push(0x87);
+        for (let i = 0; i < 256; i++) {
+          const p = local[i] || [0, 0, 0];
+          out.push(p[0], p[1], p[2]);
+        }
+      } else {
+        out.push(0);
+      }
       lzwEncode(indices, out);
     }
     out.push(0x3B);
@@ -861,32 +957,112 @@ RG.exporter = (() => {
    * Palette index 255 is reserved for transparency so the rounded corners
    * don't export as black blocks.
    */
-  async function encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress) {
+  async function encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress,
+                             dither, paletteEvery) {
     const timeline = await buildTimeline(card, rankKey, { loopSeconds, fps });
     const { W, H, frames: frameData } =
       await renderTimeline(card, rankKey, timeline, width, onProgress);
 
-    // global palette from samples spread across frames (opaque pixels only)
-    const samples = [];
-    const step = Math.max(1, Math.floor(frameData.length / 3));
-    for (let f = 0; f < frameData.length; f += step) {
-      const d = frameData[f].data;
-      for (let i = 0; i < d.length; i += 16) {
-        if (d[i + 3] >= 128) samples.push(d[i] << 16 | d[i + 1] << 8 | d[i + 2]);
+    /* Palettes are built PER FRAME, into GIF's Local Color Table.
+       A single global palette has to cover every colour the loop ever shows,
+       and the foil sweeps the whole hue wheel — so each individual frame ends
+       up with a small slice of the 255 entries and bands badly. Worse, the band
+       boundaries move between frames, which reads as regions morphing rather
+       than a gradient sliding. A per-frame table spends all 255 colours on the
+       colours that frame actually contains. Costs 768 bytes per frame. */
+    const sampleInto = (d, arr, stride) => {
+      for (let i = 0; i < d.length; i += stride) {
+        if (d[i + 3] >= 128) arr.push(d[i] << 16 | d[i + 1] << 8 | d[i + 2]);
       }
-    }
-    const palette = buildPalette(samples, 255); // 255 colors; 255 = transparent
-    const quant = makeQuantizer(palette);
+      return arr;
+    };
 
-    const frames = frameData.map(({ data, ms }) => {
-      const indices = new Uint8Array(data.length / 4);
-      for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-        indices[j] = data[i + 3] < 128 ? 255 : quant(data[i], data[i + 1], data[i + 2]);
+    /* A shared palette is rebuilt identically every frame, so a static pixel
+       quantises to the same entry all loop long and the diff keeps working.
+       A per-frame palette tracks each frame's colours far more closely, but
+       shifts slightly frame to frame, which rewrites static regions too. */
+    const globalPalette = paletteEvery ? null : (() => {
+      const samples = [];
+      const step = Math.max(1, Math.floor(frameData.length / 6));
+      for (let f = 0; f < frameData.length; f += step) sampleInto(frameData[f].data, samples, 32);
+      return buildPalette(samples, 255);
+    })();
+
+    /* One palette per group of `paletteEvery` frames. Within a group the table
+       is fixed, so an unchanged pixel quantises identically and the diff still
+       elides it; only at group boundaries do static regions get rewritten.
+       That buys most of the per-frame quality for a fraction of the bytes. */
+    const globalQuant = globalPalette ? makeQuantizer(globalPalette) : null;
+    const groups = [];
+    const quantisers = [];
+    const paletteAt = idx => {
+      if (globalPalette) return globalPalette;
+      const g = (idx / paletteEvery) | 0;
+      if (!groups[g]) {
+        const samples = [];
+        const end = Math.min(frameData.length, (g + 1) * paletteEvery);
+        // sparser per frame as groups grow, so total sample count stays flat
+        for (let f = g * paletteEvery; f < end; f++) {
+          sampleInto(frameData[f].data, samples, 64 * paletteEvery);
+        }
+        groups[g] = buildPalette(samples, 255);
+        quantisers[g] = makeQuantizer(groups[g]);
       }
-      return { indices, ms };
+      return groups[g];
+    };
+    const quantAt = idx => (globalPalette ? globalQuant
+                                          : quantisers[(idx / paletteEvery) | 0]);
+
+    /* Inter-frame diffing. Frames are written with disposal=1, so whatever was
+       already on the canvas survives — which means any pixel identical to the
+       one before it can be written as the transparent index and simply left
+       showing through. Measured 87-97% of pixels are unchanged between
+       consecutive frames, and a long run of one repeated index is precisely
+       what LZW collapses to nothing. Costs no visual quality at all, unlike
+       dropping resolution or frame rate.
+
+       `displayed` tracks what is actually on the canvas, which is not the same
+       as the previous frame's indices: a transparent pixel leaves an older
+       value in place. Starts at -1 so nothing matches on the first frame.
+
+       The one transition "do not dispose" cannot express is opaque -> transparent.
+       That never happens here: the card silhouette is identical on every frame,
+       so a pixel's transparency is fixed for the whole loop. */
+    const displayed = new Int32Array(W * H).fill(-1);
+    const frames = frameData.map(({ data, ms }, fi) => {
+      const palette = paletteAt(fi);
+      const quant = quantAt(fi);
+      const indices = new Uint8Array(data.length / 4);
+
+      for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+        let want, idx;
+        if (data[i + 3] < 128) {
+          want = -1;                   // transparent, and stays that way
+        } else {
+          if (dither) {
+            const t = BAYER8[((j / W | 0) & 7) * 8 + (j % W & 7)] * dither;
+            idx = quant(clamp255(data[i] + t), clamp255(data[i + 1] + t),
+                        clamp255(data[i + 2] + t));
+          } else {
+            idx = quant(data[i], data[i + 1], data[i + 2]);
+          }
+          const p = palette[idx];
+          want = p[0] << 16 | p[1] << 8 | p[2];
+        }
+        /* Compare the resulting COLOUR, not the index: with a local table per
+           frame the same index means different colours in different frames. */
+        if (want === displayed[j]) {
+          indices[j] = 255;            // unchanged: show the pixel already there
+        } else {
+          indices[j] = want === -1 ? 255 : idx;
+          displayed[j] = want;
+        }
+      }
+      return { indices, ms, palette: globalPalette ? null : palette };
     });
 
-    return new Blob([encodeGif(W, H, palette, frames)], { type: 'image/gif' });
+    return new Blob([encodeGif(W, H, globalPalette || frames[0].palette, frames)],
+                    { type: 'image/gif' });
   }
 
   /**
@@ -904,13 +1080,15 @@ RG.exporter = (() => {
     let width         = opts.width
       ?? (artAnimates(card.img) ? MOVING_ART_WIDTH : DEFAULT_WIDTH);
 
-    let blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress);
+    const dither = opts.dither ?? DITHER;
+    const paletteEvery = opts.paletteEvery ?? PALETTE_EVERY;
+    let blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery);
     for (let attempt = 0; attempt < 2 && blob.size > maxBytes; attempt++) {
       const next = Math.max(MIN_WIDTH,
         Math.round(width * Math.sqrt(TARGET_BYTES / blob.size)));
       if (next >= width) break;
       width = next;
-      blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress);
+      blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery);
     }
     return blob;
   }
@@ -946,8 +1124,31 @@ RG.exporter = (() => {
     });
   }
 
+  /**
+   * Render the card as an animated WebP.
+   *
+   * Same pipeline as the GIF and MP4 paths down to renderTimeline; only the
+   * compression differs. Unlike GIF there's no palette (24-bit colour, so no
+   * banding to design around) and unlike MP4 there's a real alpha channel, so
+   * the rounded corners need no matte.
+   */
+  async function toWebpBlob(card, rankKey, opts = {}) {
+    if (!RG.webp) throw new Error('WebP encoder not loaded');
+    const loopSeconds = opts.loopSeconds ?? LOOP_SECONDS;
+    const fps         = opts.fps ?? FPS;
+    const width       = opts.width ?? DEFAULT_WIDTH;
+
+    const timeline = await buildTimeline(card, rankKey, {
+      loopSeconds, fps, maxFrames: opts.maxFrames,
+    });
+    const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress);
+    return RG.webp.encode(rendered, {
+      quality: opts.quality, onProgress: opts.onProgress,
+    });
+  }
+
   const filename = (card, rankKey, ext = 'gif') => `${card.id}-${rankKey}.${ext}`;
 
-  return { render, toGifBlob, toMp4Blob, animatable, filename,
+  return { render, toGifBlob, toMp4Blob, toWebpBlob, animatable, filename,
            TARGET_BYTES, MAX_BYTES, MP4_BITRATE };
 })();

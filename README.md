@@ -121,33 +121,91 @@ material necessarily lives client-side. Clear site data to wipe your collection.
 
 ### Export
 
-Two formats, chosen by destination:
+Everything ships as an **animated GIF**, 640px wide, 80 frames at 20 fps, one
+4-second foil loop. Cards whose art is itself animated have that loop repeated
+to fill the same 4 seconds, so art and foil stay seamless together.
 
-| Path | Format | Typical size | Why |
-|---|---|---|---|
-| Embed link, share | **H.264 MP4** | ~0.9–1.0 MB | 5–7× smaller, so it loads instantly in chat |
-| Save to disk | **Animated GIF** | ~4.7–6.8 MB | the file you can drop anywhere without thinking |
+**GIF rather than MP4, despite MP4 being ~5× smaller for identical frames.**
+Tested in Discord: a link whose path ends in `.gif` renders inline and
+animated; the same card as `.mp4` renders as a video player with a
+click-to-play button. The autoplay-and-loop treatment Tenor gets is Discord's
+**provider allowlist**, not something a URL shape or meta tag can opt into — so
+format is the only lever, and GIF is the one that works. An H.264 encoder and
+from-scratch MP4 muxer are still wired up in
+[assets/js/mp4.js](assets/js/mp4.js) (`RG.exporter.toMp4Blob`), because they're
+the right choice anywhere that autoplays video; `embedFmt` in
+[assets/js/cards.js](assets/js/cards.js) is a one-word switch.
 
-Both render 640px wide, 80 frames at 20 fps, one 4-second foil loop, from the
-identical pipeline — only the final compression differs. Cards whose art is
-itself animated have that loop repeated to fill the same 4 seconds, so art and
-foil stay seamless together.
+### Keeping the GIF small
 
-**The MP4 has no transparency.** H.264 has no alpha channel, so the rounded
-corners are composited onto a matte, defaulting to Discord's dark message
-background (`#313338`) where it's invisible. On a light background the corners
-show as four small dark notches. The GIF still exports true transparency.
-Override with `RG.mp4.encode(…, { matte })` if you need a different one.
+Frames are written with **inter-frame diffing**: disposal is `1` (do not
+dispose), so any pixel identical to the one already on the canvas is written as
+the transparent index and left showing through. 87–97% of pixels are unchanged
+between consecutive frames, and a long run of one repeated index is exactly
+what LZW collapses to nothing.
 
-MP4 encoding uses WebCodecs; the muxer in
-[assets/js/mp4.js](assets/js/mp4.js) is written from scratch, same as the GIF
-encoder. It targets Constrained Baseline deliberately — the higher H.264
+Costs no visual quality at all, unlike dropping resolution or frame rate. The
+one transition "do not dispose" can't express is opaque → transparent, which
+never arises here: the card silhouette is identical on every frame.
+
+### Palettes are rebuilt every 4 frames
+
+GIF's Local Color Table lets each frame carry its own palette. Using one shared
+table for the whole loop is what produced the "morphing instead of moving"
+look: the foil sweeps the entire hue wheel, so 255 entries had to cover every
+hue at every luminance across all 80 frames. Each individual frame got a thin
+slice of them, banded hard, and the band edges *snapped* between frames.
+
+Measured on vibe-check / reverse, where `meanJump` is the average colour change
+among pixels that changed — low is smooth motion, high is regions flipping:
+
+| Palette rebuilt | Size | Unique colours | Pixels changed | meanJump |
+|---|---|---|---|---|
+| once for the loop | 0.85 MB | 189 | 3.0% | 7.0 |
+| every 8 frames | 1.31 MB | 189 | 11.4% | 3.2 |
+| **every 4 frames** | **1.51 MB** | **206** | **15.1%** | **3.1** |
+| every 2 frames | 2.02 MB | 209 | 19.8% | 3.2 |
+| every frame | 2.74 MB | 206 | 27.1% | 2.2 |
+
+Every 4 frames takes essentially all the available smoothness (7.0 → 3.1) for
++0.66 MB and no extra encode time. Per-frame buys a little more but costs
+another 1.2 MB and doubles encoding, because rebuilding the palette shifts
+colours slightly even in *static* regions, which defeats the inter-frame diff.
+Grouping keeps the table fixed within a group, so static pixels quantise
+identically and only get rewritten at group boundaries.
+
+Net against the original encoder — smoother *and* smaller on every card:
+
+| Card | Before | After |
+|---|---|---|
+| vibe-check / reverse | 4.89 MB | **1.51 MB** (−69%) |
+| deploy-on-friday / holo | 4.79 MB | **3.89 MB** (−19%) |
+| galaxy-brain / cosmic | 6.13 MB | **5.37 MB** (−12%) |
+| this-is-fine / fullart | 6.78 MB | **6.50 MB** (−4%) |
+
+Full Art gains least on both counts because its foil sweeps the entire card,
+leaving little unchanged between frames.
+
+**Dithering is implemented but off** (`DITHER = 0`). It's the wrong tool here:
+against grouped palettes it left `meanJump` unchanged while adding 2.2 MB, and
+against a shared palette it made it *worse* (5.9 → 6.7). Dithering only shuffles
+error between neighbouring pixels; it can't conjure colours the palette lacks.
+Kept as a knob for much smaller palettes, where it would start to pay.
+
+**If you switch to MP4, note it has no transparency.** H.264 has no alpha
+channel, so the rounded corners get composited onto a matte, defaulting to
+Discord's dark message background (`#313338`) where it's invisible; on a light
+background they show as four small dark notches. GIF exports true
+transparency. Override with `RG.mp4.encode(…, { matte })`.
+
+MP4 encoding uses WebCodecs and the muxer is written from scratch, same as the
+GIF encoder. It targets Constrained Baseline deliberately — the higher H.264
 profiles emit B-frames, which decouple decode order from presentation order and
 would require a `ctts` table and separate dts/pts for maybe 15% size against a
 format already being beaten by 5×. Browsers without WebCodecs fall back to GIF
 for everything.
 
-Encoding takes ~0.8–1.2 s (MP4) or ~1.4–1.9 s (GIF) per card and reports
+Encoding takes ~1.5–2.0 s (GIF) or ~0.8–1.2 s (MP4) per card and reports
 progress. Tuning constants live at the top of
 [assets/js/exporter.js](assets/js/exporter.js). The GIF path scales width down
 and re-encodes if a card overshoots its 9 MB hard cap; the MP4 path needs no

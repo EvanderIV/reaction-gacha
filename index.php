@@ -201,6 +201,7 @@ $configJson = json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICO
 <script src="assets/js/storage.js"></script>
 <script src="assets/js/audio.js"></script>
 <script src="assets/js/mp4.js"></script>
+<script src="assets/js/webp.js"></script>
 <script src="assets/js/exporter.js"></script>
 <script src="assets/js/share.js"></script>
 <script src="assets/js/cards.js"></script>
