@@ -14,7 +14,7 @@
     RewriteEngine On
 
     # Tokens are base64url from rg_token_encode(), so the charset is fixed.
-    RewriteRule ^i/([A-Za-z0-9_-]+)\.(gif|png|mp4)$ i.php?c=$1 [L,QSA]
+    RewriteRule ^i/([A-Za-z0-9_-]+)\.(gif|png|mp4|webp)$ i.php?c=$1 [L,QSA]
 </IfModule>
 
 # Runtime state: instance secret, stored embed images, rate-limit buckets.

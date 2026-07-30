@@ -18,16 +18,26 @@ RG.exporter = (() => {
      going faster risks decoders that clamp very short delays. */
   const FPS = 20;
 
-  /* Ceiling on frames per export. Frame count drives both file size and encode
-     time almost linearly, so this is the real brake on how long a clip can be:
-     LOOP_SECONDS x FPS must fit under it or the sampling rate drops to
-     compensate (the loop keeps its requested duration either way). */
-  const MAX_FRAMES = 80;
+  /* Ceiling on frames per export. Size and encode time both scale almost
+     linearly with this, so it is the real brake on clip length: ART_SECONDS x
+     FPS must fit under it, or the sampling rate drops to compensate and the
+     loop keeps its full duration at a lower frame rate. 240 = 12 s at 20 fps. */
+  const MAX_FRAMES = 240;
+
+  /* How much of a long clip to keep, independent of the foil period above.
+     WebP made frames cheap enough that this stopped needing to equal
+     LOOP_SECONDS — art can run for 12 s while the foil keeps sweeping every
+     4 s. Clips longer than this are truncated, not sped up. */
+  const ART_SECONDS = 12.0;
 
   /* H.264 needs roughly a fifth of GIF's bytes for the same frames, so size
      stops being the binding constraint and quality becomes the dial. 2 Mbps
      holds up on the foil gradients, which are what banding shows on first. */
   const MP4_BITRATE = 2_000_000;
+
+  /* Chrome's WebP quality scale. 0.75 measured smaller than the 255-colour GIF
+     of the same frames while carrying full 24-bit colour and an alpha channel. */
+  const WEBP_QUALITY = 0.75;
 
   /* Ordered-dither strength in colour levels; 0 disables it.
      Off by default because it was measured to be the wrong tool for this
@@ -892,24 +902,37 @@ RG.exporter = (() => {
    */
   async function buildTimeline(card, rankKey, opts) {
     const { loopSeconds, fps } = opts;
+    const artSeconds = opts.artSeconds ?? ART_SECONDS;
     const rank = RG.RARITIES.findIndex(r => r.key === rankKey);
     const hasFoil = rank >= 1;
-    const artFrames = await decodeArtFrames(card, loopSeconds, fps, opts.maxFrames);
+    const artFrames = await decodeArtFrames(card, artSeconds, fps, opts.maxFrames);
     const delayMs = Math.round(100 / fps) * 10;  // snap to whole centiseconds
 
     if (artFrames) {
       const artLoop = artFrames.reduce((s, f) => s + f.ms, 0);
-      // repeat the art loop to reach the foil period (capped so a very short
-      // source GIF can't explode the frame count)
-      const reps = hasFoil && artLoop > 0
-        ? Math.max(1, Math.min(8, Math.round((loopSeconds * 1000) / artLoop)))
+      const foilMs = loopSeconds * 1000;
+
+      /* Short clips repeat so a one-second GIF doesn't give the foil a
+         one-second sweep. Long ones play through once and set the loop length
+         themselves. Capped so a very short source can't explode the count. */
+      const reps = artLoop > 0 && artLoop < foilMs
+        ? Math.max(1, Math.min(8, Math.ceil(foilMs / artLoop)))
         : 1;
       const total = artLoop * reps;
+
+      /* The foil runs at its own speed rather than being stretched over the
+         whole clip: art can now be 12 s, and a 12-second foil sweep reads as
+         broken rather than slow. Rounding to a WHOLE number of cycles is what
+         keeps the wrap seamless — the phase has to land back at 0 exactly. */
+      const cycles = hasFoil && total > 0
+        ? Math.max(1, Math.round(total / foilMs))
+        : 1;
+
       const out = [];
       let cum = 0;
       for (let r = 0; r < reps; r++) {
         for (const f of artFrames) {
-          out.push({ t: total ? cum / total : 0, art: f.img, ms: f.ms });
+          out.push({ t: total ? (cum / total * cycles) % 1 : 0, art: f.img, ms: f.ms });
           cum += f.ms;
         }
       }
@@ -958,8 +981,9 @@ RG.exporter = (() => {
    * don't export as black blocks.
    */
   async function encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress,
-                             dither, paletteEvery) {
-    const timeline = await buildTimeline(card, rankKey, { loopSeconds, fps });
+                             dither, paletteEvery, artSeconds, maxFrames) {
+    const timeline = await buildTimeline(card, rankKey,
+      { loopSeconds, fps, artSeconds, maxFrames });
     const { W, H, frames: frameData } =
       await renderTimeline(card, rankKey, timeline, width, onProgress);
 
@@ -1082,13 +1106,15 @@ RG.exporter = (() => {
 
     const dither = opts.dither ?? DITHER;
     const paletteEvery = opts.paletteEvery ?? PALETTE_EVERY;
-    let blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery);
+    let blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery,
+                                 opts.artSeconds, opts.maxFrames);
     for (let attempt = 0; attempt < 2 && blob.size > maxBytes; attempt++) {
       const next = Math.max(MIN_WIDTH,
         Math.round(width * Math.sqrt(TARGET_BYTES / blob.size)));
       if (next >= width) break;
       width = next;
-      blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery);
+      blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery,
+                                 opts.artSeconds, opts.maxFrames);
     }
     return blob;
   }
@@ -1113,7 +1139,7 @@ RG.exporter = (() => {
     const width       = opts.width ?? DEFAULT_WIDTH;
 
     const timeline = await buildTimeline(card, rankKey, {
-      loopSeconds, fps, maxFrames: opts.maxFrames,
+      loopSeconds, fps, maxFrames: opts.maxFrames, artSeconds: opts.artSeconds,
     });
     const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress);
 
@@ -1139,16 +1165,25 @@ RG.exporter = (() => {
     const width       = opts.width ?? DEFAULT_WIDTH;
 
     const timeline = await buildTimeline(card, rankKey, {
-      loopSeconds, fps, maxFrames: opts.maxFrames,
+      loopSeconds, fps, maxFrames: opts.maxFrames, artSeconds: opts.artSeconds,
     });
     const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress);
-    return RG.webp.encode(rendered, {
-      quality: opts.quality, onProgress: opts.onProgress,
-    });
+
+    let quality = opts.quality ?? WEBP_QUALITY;
+    let blob = await RG.webp.encode(rendered, { quality, onProgress: opts.onProgress });
+    /* Quality is a direct dial on size, so unlike the GIF path there's no need
+       to re-render at a smaller width — just recompress the frames we have. */
+    for (let attempt = 0; attempt < 2 && blob.size > (opts.maxBytes ?? MAX_BYTES); attempt++) {
+      quality = Math.max(0.4, quality - 0.15);
+      blob = await RG.webp.encode(rendered, { quality, onProgress: opts.onProgress });
+    }
+    return blob;
   }
 
   const filename = (card, rankKey, ext = 'gif') => `${card.id}-${rankKey}.${ext}`;
 
   return { render, toGifBlob, toMp4Blob, toWebpBlob, animatable, filename,
-           TARGET_BYTES, MAX_BYTES, MP4_BITRATE };
+           TARGET_BYTES, MAX_BYTES, MP4_BITRATE, ART_SECONDS, MAX_FRAMES,
+           // exposed for inspection: frame phases and durations, pre-render
+           buildTimeline };
 })();

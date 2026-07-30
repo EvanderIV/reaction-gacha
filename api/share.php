@@ -70,8 +70,9 @@ $bytes = (string) file_get_contents($file['tmp_name']);
 $magicGif = str_starts_with($bytes, 'GIF87a') || str_starts_with($bytes, 'GIF89a');
 $magicPng = str_starts_with($bytes, "\x89PNG\r\n\x1a\n");
 $magicMp4 = substr($bytes, 4, 4) === 'ftyp';
-if (!$magicGif && !$magicPng && !$magicMp4) {
-    rg_json(415, ['error' => 'Only GIF, PNG or MP4 accepted']);
+$magicWebp = str_starts_with($bytes, 'RIFF') && substr($bytes, 8, 4) === 'WEBP';
+if (!$magicGif && !$magicPng && !$magicMp4 && !$magicWebp) {
+    rg_json(415, ['error' => 'Only GIF, PNG, WebP or MP4 accepted']);
 }
 
 // pull real dimensions out of the header rather than trusting the client
@@ -83,6 +84,12 @@ if ($magicGif) {
     $w = unpack('N', substr($bytes, 16, 4))[1];
     $h = unpack('N', substr($bytes, 20, 4))[1];
     $mime = 'image/png';
+} elseif ($magicWebp) {
+    [$w, $h] = rg_webp_dimensions($bytes);
+    if ($w === 0) {
+        rg_json(415, ['error' => 'Unreadable WebP — no image chunk found']);
+    }
+    $mime = 'image/webp';
 } else {
     [$w, $h] = rg_mp4_dimensions($bytes);
     if ($w === 0) {

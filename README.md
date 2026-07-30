@@ -40,9 +40,24 @@ the generated SVG placeholder. No other changes needed.
 
 **Video works like an animated GIF, only better.** MP4/WebM art plays in the
 card (muted, looping, and paused while off-screen so a full grid doesn't decode
-everything at once) and is sampled frame-by-frame into the exported GIF. The
+everything at once) and is sampled frame-by-frame into the export.
+
+Sampling seeks a `<video>`, and the clip is **buffered through a `blob:` URL
+first** rather than seeked over the network. Seeking a streamed video needs the
+server to honour HTTP Range requests; PHP's built-in `php -S` doesn't, and
+Chrome's response is to silently pin `currentTime` at 0 — every sample returns
+frame zero and the art exports completely static, with no error raised
+anywhere. A blob is in memory and always seekable. The exporter also warns if
+widely separated samples come back byte-identical, because that failure is
+otherwise invisible until someone looks closely at a finished card. The
 first 4 seconds are used at 20 fps so playback keeps its natural speed rather
 than being squashed into the foil loop; shorter clips repeat to fill it.
+
+Card art is rendered `pointer-events: none`, with `disablePictureInPicture`
+and `disableRemotePlayback` set on the video element. Chrome otherwise floats a
+picture-in-picture button over any video on hover — even one with no `controls`
+attribute — which looks like part of the card and steals the pointer from the
+tilt and click-to-expand handlers.
 
 **Art is always cover-cropped** — it fills its frame completely and overflows
 are trimmed, never letterboxed or squashed. That's `object-fit: cover` on the
@@ -121,20 +136,58 @@ material necessarily lives client-side. Clear site data to wipe your collection.
 
 ### Export
 
-Everything ships as an **animated GIF**, 640px wide, 80 frames at 20 fps, one
-4-second foil loop. Cards whose art is itself animated have that loop repeated
-to fill the same 4 seconds, so art and foil stay seamless together.
+| Path | Format | Typical size |
+|---|---|---|
+| Embed link, share | **Animated WebP** | 1.4–3.0 MB |
+| Save to disk | **Animated GIF** | 1.5–6.5 MB |
 
-**GIF rather than MP4, despite MP4 being ~5× smaller for identical frames.**
-Tested in Discord: a link whose path ends in `.gif` renders inline and
-animated; the same card as `.mp4` renders as a video player with a
-click-to-play button. The autoplay-and-loop treatment Tenor gets is Discord's
-**provider allowlist**, not something a URL shape or meta tag can opt into — so
-format is the only lever, and GIF is the one that works. An H.264 encoder and
-from-scratch MP4 muxer are still wired up in
-[assets/js/mp4.js](assets/js/mp4.js) (`RG.exporter.toMp4Blob`), because they're
-the right choice anywhere that autoplays video; `embedFmt` in
-[assets/js/cards.js](assets/js/cards.js) is a one-word switch.
+Both render 640px wide at 20 fps from the identical pipeline — only the final
+compression differs.
+
+**The foil period and the art window are separate.** Foil sweeps every
+`LOOP_SECONDS` (4 s); animated art plays up to `ART_SECONDS` (12 s) and sets
+the loop length itself, with the foil completing a whole number of sweeps
+across it. Whole is the important part — the phase has to land back at 0 for
+the wrap to be seamless. Clips shorter than the foil period repeat instead, so
+a one-second GIF doesn't give the foil a one-second sweep, and clips longer
+than 12 s are truncated rather than sped up.
+
+That decoupling is what makes long art usable: stretching one foil sweep across
+a 12-second card reads as broken rather than slow. A ~6 s clip gets 2 sweeps of
+3.0 s; a 12 s clip gets 3 of 4.0 s.
+
+`MAX_FRAMES` (240 = 12 s at 20 fps) is the real brake, since size and encode
+time both scale almost linearly with frame count. Past it the sampling rate
+drops and the clip keeps its full duration at a lower frame rate.
+
+**Why WebP for embeds.** All three viable formats were tested in Discord:
+
+| Link ends in | Discord renders it as |
+|---|---|
+| `.webp` | inline, animated, looping ✅ |
+| `.gif` | inline, animated, looping ✅ |
+| `.mp4` | video player with a click-to-play button ❌ |
+
+The autoplay-loop treatment Tenor gets is Discord's **provider allowlist**,
+keyed on the domain — not something a URL shape or meta tag can opt into, so
+MP4 is out however well it compresses. Between the two that work, WebP wins
+outright: 24-bit colour instead of a 255-entry palette (no banding, none of the
+"morphing" artefacts the GIF encoder has to fight), a real alpha channel so the
+rounded corners stay transparent, and roughly a quarter of the bytes.
+
+WebP encoding lives in [assets/js/webp.js](assets/js/webp.js): the browser
+compresses each frame via `canvas.toBlob('image/webp')` and the module unwraps
+those stills and re-wraps them as a RIFF animation (`VP8X` + `ANIM` +
+per-frame `ANMF`). It drops the 456-byte `ICCP` colour profile Chrome attaches
+to every frame — 36 KB of waste across a loop.
+
+The H.264 encoder and from-scratch MP4 muxer in
+[assets/js/mp4.js](assets/js/mp4.js) (`RG.exporter.toMp4Blob`) are still wired
+up for anywhere that does autoplay video. `embedFmt` in
+[assets/js/cards.js](assets/js/cards.js) selects between all three.
+
+Everything below about palettes applies to the **GIF** path only — WebP has no
+palette to manage.
 
 ### Keeping the GIF small
 

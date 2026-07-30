@@ -387,10 +387,59 @@ function rg_image_url(string $token, string $mime = 'image/gif'): string
 function rg_mime_ext(string $mime): string
 {
     return match ($mime) {
-        'video/mp4' => 'mp4',
-        'image/png' => 'png',
-        default     => 'gif',
+        'image/webp' => 'webp',
+        'video/mp4'  => 'mp4',
+        'image/png'  => 'png',
+        default      => 'gif',
     };
+}
+
+/**
+ * Width and height of a WebP, read from its chunk headers.
+ *
+ * Parsed rather than trusted for the same reason as the GIF, PNG and MP4
+ * headers: these values go straight into og:image:width, and a client that
+ * lies there distorts every unfurl of the link.
+ *
+ * Animated exports are always VP8X (that is the chunk that carries the
+ * animation flag), but plain VP8/VP8L stills are handled too.
+ *
+ * Returns [0, 0] when nothing usable is found.
+ */
+function rg_webp_dimensions(string $bytes): array
+{
+    $len = strlen($bytes);
+    if ($len < 30 || substr($bytes, 0, 4) !== 'RIFF' || substr($bytes, 8, 4) !== 'WEBP') {
+        return [0, 0];
+    }
+    $u24 = fn(int $o): int => ord($bytes[$o]) | (ord($bytes[$o + 1]) << 8) | (ord($bytes[$o + 2]) << 16);
+
+    $off = 12;
+    while ($off + 8 <= $len) {
+        $type = substr($bytes, $off, 4);
+        $size = unpack('V', substr($bytes, $off + 4, 4))[1];
+        $body = $off + 8;
+        if ($size < 0 || $body + $size > $len) return [0, 0];
+
+        if ($type === 'VP8X' && $size >= 10) {
+            // flags(1) reserved(3) then canvas width-1 and height-1, 24-bit LE
+            return [$u24($body + 4) + 1, $u24($body + 7) + 1];
+        }
+        if ($type === 'VP8 ' && $size >= 10) {
+            // 3-byte frame tag, 3-byte sync code, then 14-bit width and height
+            if (substr($bytes, $body + 3, 3) !== "*") return [0, 0];
+            $w = unpack('v', substr($bytes, $body + 6, 2))[1] & 0x3FFF;
+            $h = unpack('v', substr($bytes, $body + 8, 2))[1] & 0x3FFF;
+            return [$w, $h];
+        }
+        if ($type === 'VP8L' && $size >= 5 && $bytes[$body] === "/") {
+            // 14 bits width-1 then 14 bits height-1, packed little-endian
+            $bits = unpack('V', substr($bytes, $body + 1, 4))[1];
+            return [($bits & 0x3FFF) + 1, (($bits >> 14) & 0x3FFF) + 1];
+        }
+        $off = $body + $size + ($size & 1);   // chunks pad to even lengths
+    }
+    return [0, 0];
 }
 
 /**

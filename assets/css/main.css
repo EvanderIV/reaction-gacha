@@ -537,6 +537,22 @@ body[data-theme="mtg"] .card-art { border-radius: 3px; border-color: #0d0905; }
   object-position: center;
   position: relative; z-index: 1;
   background: #0b0d12;
+  /* The art is decoration, not a player. Without this the card's own hover
+     tilt and click-to-expand fight the video element for the pointer. */
+  pointer-events: none;
+}
+
+/* Chrome volunteers a picture-in-picture and a cast button over any video on
+   hover, even one with no controls attribute. They float above the artwork and
+   look like part of the card. The attributes in cards.js are the real fix;
+   these rules cover the overlays that aren't attribute-controlled. */
+.card-art video::-webkit-media-controls,
+.card-art video::-webkit-media-controls-enclosure,
+.card-art video::-webkit-media-controls-panel,
+.card-art video::-webkit-media-controls-start-playback-button,
+.card-art video::-webkit-media-controls-overlay-play-button {
+  display: none !important;
+  -webkit-appearance: none;
 }
 
 .card-usage {

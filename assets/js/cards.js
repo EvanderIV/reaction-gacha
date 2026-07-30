@@ -72,6 +72,14 @@ window.RG = window.RG || {};
       media.loop = true;
       media.playsInline = true;
       media.preload = 'metadata';
+      /* Card art is decoration, not a video player. Chrome otherwise floats a
+         picture-in-picture button (and a cast button on some setups) over the
+         artwork on hover, which reads as part of the card. */
+      media.disablePictureInPicture = true;
+      media.disableRemotePlayback = true;
+      media.setAttribute('disablepictureinpicture', '');
+      media.setAttribute('disableremoteplayback', '');
+      media.setAttribute('controlslist', 'nodownload nofullscreen noremoteplayback noplaybackrate');
       media.setAttribute('aria-label', card.title);
       media.src = card.img;
       observePlayback(media);
@@ -327,23 +335,27 @@ window.RG = window.RG || {};
 
     exporting = true;
 
-    /* Embeds go out as GIF, despite MP4 being ~5x smaller for identical frames.
-       Tested in Discord: a link whose path ends in .gif renders inline and
-       animated, while the same card as .mp4 renders as a video player with a
-       click-to-play button. The autoplay-and-loop treatment Tenor gets is
-       Discord's provider allowlist, not something a URL or meta tag can opt
-       into, so format is the only lever we have and GIF is the one that works.
+    /* Embeds go out as animated WebP, verified rendering inline and looping in
+       Discord. It wins on every axis that mattered: 24-bit colour instead of a
+       255-entry palette (no banding, no morphing artefacts), a real alpha
+       channel so the rounded corners stay transparent, and roughly a quarter of
+       the bytes of the equivalent GIF.
 
-       RG.mp4 is still wired up — it's the right choice anywhere that autoplays
-       video, and toMp4Blob() is a one-word change away here. */
-    const embedFmt = 'gif';
+       MP4 is not used despite compressing comparably, because Discord renders a
+       .mp4 link as a click-to-play video player — the autoplay-loop treatment
+       Tenor gets is Discord's provider allowlist, not something a URL or meta
+       tag can opt into.
+
+       Save-to-disk stays GIF: it's the file you can drop anywhere without
+       thinking. Browsers without WebP encoding fall back to GIF for embeds. */
+    const embedFmt = (RG.webp && await RG.webp.supported()) ? 'webp' : 'gif';
 
     const build = fmt => {
       RG.toast('Rendering card…');
       const opts = { onProgress: p => RG.toast(`Rendering card… ${Math.round(p * 100)}%`) };
-      return fmt === 'mp4'
-        ? RG.exporter.toMp4Blob(card, rankKey, opts)
-        : RG.exporter.toGifBlob(card, rankKey, opts);
+      if (fmt === 'webp') return RG.exporter.toWebpBlob(card, rankKey, opts);
+      if (fmt === 'mp4')  return RG.exporter.toMp4Blob(card, rankKey, opts);
+      return RG.exporter.toGifBlob(card, rankKey, opts);
     };
 
     try {

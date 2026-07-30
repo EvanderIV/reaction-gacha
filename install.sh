@@ -321,7 +321,7 @@ if [[ "$SERVER" == "apache" ]]; then
         # and animated instead of unfurling it as a rich-embed card with a
         # static thumbnail. Tokens are base64url, hence the charset.
         RewriteEngine On
-        RewriteRule ^i/([A-Za-z0-9_-]+)\.(gif|png|mp4)\$ i.php?c=\$1 [L,QSA]
+        RewriteRule ^i/([A-Za-z0-9_-]+)\.(gif|png|mp4|webp)\$ i.php?c=\$1 [L,QSA]
     </Directory>
 
     # Instance secret, stored embed images and rate-limit buckets.
@@ -373,8 +373,8 @@ server {
     # The .gif extension is what makes chat clients render the card inline and
     # animated instead of unfurling it as a rich-embed card with a static
     # thumbnail. Tokens are base64url, hence the charset.
-    location ~ ^/i/([A-Za-z0-9_-]+)\\.(gif|png|mp4)\$ {
-        rewrite ^/i/([A-Za-z0-9_-]+)\\.(gif|png|mp4)\$ /i.php?c=\$1 last;
+    location ~ ^/i/([A-Za-z0-9_-]+)\\.(gif|png|mp4|webp)\$ {
+        rewrite ^/i/([A-Za-z0-9_-]+)\\.(gif|png|mp4|webp)\$ /i.php?c=\$1 last;
     }
 
     location / {
