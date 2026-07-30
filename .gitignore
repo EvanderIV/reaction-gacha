@@ -1,0 +1,9 @@
+# Runtime state: instance secret, stored embed images, rate-limit buckets.
+# The secret must never be committed — it's what binds share links to this
+# install, and leaking it lets anyone forge tokens.
+/storage/
+
+# Per-deployment overrides (see config.local.example.php)
+/config.local.php
+
+assets/images/

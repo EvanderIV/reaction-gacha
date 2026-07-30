@@ -1,0 +1,126 @@
+/* Standalone embed / share landing page. Rides on main.css theme tokens. */
+
+.embed-wrap {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 26px 22px 70px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  align-items: center;
+}
+
+.embed-head {
+  display: flex; align-items: center; gap: 10px;
+  align-self: flex-start;
+  opacity: .85;
+}
+
+.embed-card {
+  margin: 0;
+  border-radius: 18px;
+  overflow: hidden;
+  line-height: 0;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, .45);
+  max-width: min(400px, 82vw);
+  animation: embed-in .5s var(--ease-out);
+}
+.embed-card img { width: 100%; height: auto; }
+
+.embed-card-gone {
+  width: min(300px, 70vw);
+  aspect-ratio: 5 / 7;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--panel);
+  border: 2px dashed var(--panel-border);
+  box-shadow: none;
+}
+.gone-face {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  line-height: 1.4;
+  font-size: 14px; font-weight: 800; letter-spacing: 2px;
+  color: var(--text-dim);
+}
+.gone-face span { font-size: 46px; opacity: .55; }
+
+@keyframes embed-in {
+  from { opacity: 0; transform: translateY(16px) scale(.96); }
+}
+
+.embed-meta {
+  text-align: center;
+  max-width: 560px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+}
+
+.embed-title {
+  font-family: var(--font-card-title);
+  font-size: clamp(26px, 5vw, 38px);
+  font-weight: 800;
+  letter-spacing: .3px;
+}
+body[data-theme="mtg"] .embed-title { font-weight: 700; }
+
+.embed-usage {
+  font-family: var(--font-card-body);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+body[data-theme="mtg"] .embed-usage { font-style: italic; }
+
+.embed-chips {
+  display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+}
+.embed-chip {
+  padding: 6px 13px;
+  border-radius: 999px;
+  font-size: 12.5px; font-weight: 800; letter-spacing: .6px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--text-dim);
+}
+.embed-chip[style*="--type-color"] {
+  color: #fff;
+  background: linear-gradient(160deg, var(--type-color), color-mix(in srgb, var(--type-color) 55%, #000));
+  border-color: transparent;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
+}
+.r-chip[data-r="reverse"] { color: #30a7d7; border-color: currentColor; }
+.r-chip[data-r="holo"]    { color: #b76ef0; border-color: currentColor; }
+.r-chip[data-r="fullart"] { color: #f5a623; border-color: currentColor; }
+.r-chip[data-r="cosmic"] {
+  border-color: transparent; color: #fff;
+  background: linear-gradient(120deg, #ff5f8f, #ffc24b, #59d4ff);
+  background-size: 220% 100%;
+  animation: chip-shift 5s linear infinite;
+}
+@keyframes chip-shift { to { background-position: 220% 0; } }
+
+.embed-note {
+  font-size: 13.5px;
+  line-height: 1.5;
+  padding: 11px 16px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--text-dim);
+  max-width: 460px;
+}
+.embed-note b { color: var(--text); }
+.embed-note.burn-now  { border-color: color-mix(in srgb, #e3350d 45%, transparent); }
+.embed-note.burn-done { opacity: .8; }
+
+/* failure states */
+.embed-fail {
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
+  padding-top: 12vh;
+}
+.fail-glyph { font-size: 72px; filter: grayscale(.6); opacity: .7; }
+.embed-fail h1 { font-size: 28px; font-weight: 800; }
+.embed-fail p { color: var(--text-dim); max-width: 420px; line-height: 1.55; }
+
+@media (max-width: 640px) {
+  .embed-wrap { padding: 18px 16px 50px; gap: 20px; }
+}
