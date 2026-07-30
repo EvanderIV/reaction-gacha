@@ -19,7 +19,7 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------- defaults --
 
 SERVER=apache          # apache | nginx
-TARGET_DIR=/var/www/reaction-gacha
+TARGET_DIR=/var/www/html/apps/reaction-gacha
 DOMAIN=""
 EMAIL=""
 WANT_TLS=1
