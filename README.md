@@ -49,15 +49,30 @@ Chrome's response is to silently pin `currentTime` at 0 — every sample returns
 frame zero and the art exports completely static, with no error raised
 anywhere. A blob is in memory and always seekable. The exporter also warns if
 widely separated samples come back byte-identical, because that failure is
-otherwise invisible until someone looks closely at a finished card. The
-first 4 seconds are used at 20 fps so playback keeps its natural speed rather
-than being squashed into the foil loop; shorter clips repeat to fill it.
+otherwise invisible until someone looks closely at a finished card.
 
-Card art is rendered `pointer-events: none`, with `disablePictureInPicture`
-and `disableRemotePlayback` set on the video element. Chrome otherwise floats a
-picture-in-picture button over any video on hover — even one with no `controls`
-attribute — which looks like part of the card and steals the pointer from the
-tilt and click-to-expand handlers.
+Up to `ART_SECONDS` (12 s) is sampled at 20 fps, so playback keeps its natural
+speed rather than being squashed into the foil loop; shorter clips repeat to
+fill it, and longer ones are truncated. See **Export** below for how the foil
+keeps its own period across a long clip.
+
+**Video art is painted into a `<canvas>`, from a video element that never
+enters the document.** Browsers decorate `<video>` with their own floating
+controls that hover over the artwork looking like part of the card: Chromium
+offers picture-in-picture and cast, Opera GX adds a video pop-out button.
+`disablePictureInPicture` and `controlsList` only cover Chromium's own — Opera's
+is proprietary and ignores them, and it appears at the loop point rather than on
+hover, so there's no interaction to suppress either. A canvas is not a media
+element, so nothing has anything to attach to.
+
+Painting is driven by `requestVideoFrameCallback` where available rather than
+`requestAnimationFrame`: source clips run at 24-30 fps, so a plain rAF loop
+would blit the same picture twice out of every three calls on a 60 Hz display.
+The IntersectionObserver stops the paint loop *and* pauses the decoder when a
+card scrolls off-screen. Art is also `pointer-events: none` so it never steals
+the pointer from the tilt and click-to-expand handlers.
+
+GIF and still art stay plain `<img>` — they have no media element to decorate.
 
 **Art is always cover-cropped** — it fills its frame completely and overflows
 are trimmed, never letterboxed or squashed. That's `object-fit: cover` on the
@@ -70,6 +85,45 @@ Media that won't load never breaks a render: the card falls back to a flat
 gradient and logs a warning, and the failure isn't cached, so the next attempt
 retries. Metadata loads and seeks are both bounded by timeouts so a stalled
 fetch can't hang an export.
+
+### One card, many faces
+
+If `assets/images/{card-id}/` is a **directory** rather than a file, `index.php`
+treats its contents as a pool and draws one at random. `pukeko-bird` uses this:
+42 captioned birds, a different one per page load.
+
+The draw happens **server-side, once per request**. That matters — the preview,
+the expanded view and every export all read the same `card['img']`, so picking
+per render would let the card you're looking at disagree with the file you just
+downloaded. Reload for a different one.
+
+Two extras come with a pool:
+
+- `card['variant']` — the chosen filename, humanised (`neuron-activation` →
+  `Neuron Activation`). Put `{variant}` anywhere in a card's `usage` text and it
+  resolves to whatever was drawn.
+- `card['variants']` — how many are in the pool.
+
+A pool also tends to want `'fit' => 'contain'` (see below): 42 images means 42
+aspect ratios, and one crop rectangle can't be right for all of them.
+
+### Cover vs. contain
+
+Art fills its window and crops the overflow, because a card frame is a fixed
+aspect and source images are not. Set `'fit' => 'contain'` on a card to
+letterbox instead, showing the whole image against the art window's backdrop.
+
+Use it when the edges of an image carry meaning — `pukeko-bird`'s captions are
+baked into the pixels, and a crop eventually eats a punchline. The preview and
+the export share the letterbox colour (`.card-art` background in `main.css`,
+`ART_BACKDROP` in `exporter.js`), so what you download matches what you saw.
+
+Full Art ignores `fit`: a full-bleed frame has no window to letterbox inside.
+
+A directory beats a same-named file, extensions are matched case-insensitively
+(Debian's filesystem is case-sensitive; a `.JPG` that works on Windows would
+otherwise vanish in production), and mixing stills with video in one pool is
+fine — `vid` is set per pick.
 
 ### Adding a card
 
@@ -96,18 +150,142 @@ taller card; it's the same frame with the artwork behind the text instead of in
 a window. `fullArt => false` opts a card out because not every image survives
 having text laid over it.
 
+### One design, any size
+
+The card renders at wildly different widths — 420px expanded, 178–258px in the
+grid depending on the viewport, 230px in the reveal stack. So `.card` is a
+**size container**, and every length inside it is a multiple of `--u`, where
+1u is one pixel of the 230px reference design:
+
+```css
+.card { container-type: inline-size; --u: calc(100cqw / 230); }
+.card-title { font-size: calc(14.5 * var(--u)); }   /* still reads as "14.5px" */
+```
+
+They used to be fixed pixels, so the expanded card kept grid-sized text in a
+frame nearly twice as wide and read as sparse and under-filled. Now every
+proportion is identical at every size — measured as a fraction of card width,
+type, padding and radii come out **0.0% apart** between a 230px tile and the
+420px expanded card.
+
+Three things that are easy to get wrong here:
+
+- **`cqw` in a container's own properties resolves against its *ancestor*
+  container, not itself.** `--u` is declared on `.card` but only ever consumed
+  by descendants, where it resolves against that card.
+- **The card's own `border-radius` therefore can't use `--u`.** It's a
+  percentage pair instead — `6.087% / 4.348%` — which resolves against the
+  box's own width and height, and because the card is always 5:7 those two
+  figures stay a circular 14px-at-230 corner at every size.
+- **Border widths are floored to whole pixels**, so a 229.6px card computed
+  2.99 and painted a 2px frame edge where 3px was intended. They go through
+  `round(…, 1px)`, declared after the shorthand so an engine without `round()`
+  keeps the plain `calc`.
+
+The starfield sizes its glyphs from JS, so those are set in `cqw` directly
+rather than px.
+
+Two things container queries deliberately **can't** see, both of which are
+correct: the reveal stack's cards are rotated in 3D and the expand animation
+scales its card, so both have painted bounding boxes wider than the boxes they
+were laid out in. Container units use the layout box. Measure with
+`offsetWidth`, not `getBoundingClientRect`, or you will chase a drift that
+isn't there.
+
+**Foil over artwork uses `screen`; foil over the frame uses `color-dodge`.**
+Not a stylistic split — color-dodge is `base / (1 - blend)`, so it clips to pure
+white the moment the blend approaches 1 *and* multiplies whatever noise the
+source already has. The highlight peaked at `.8`, i.e. a 5× gain on the grain
+in a dark, heavily compressed reaction GIF, which read as coloured speckle and
+crushed blacks rather than as foil. Card stock has no grain to amplify, so the
+frame keeps it.
+
+Measured on `popcorn-time` (dark, grainy source), artwork region:
+
+| | color-dodge | screen |
+|---|---|---|
+| high-frequency energy (grain) | 11.5 | **5.6** |
+| mean brightness | 73 | **87** (export renders 79) |
+| blown-out pixels | present | **0%** |
+
+Screen only ever lightens, so it can't amplify anything — but it also can't
+produce color-dodge's intense iridescence. That's bought back with
+`--foil-sat`, which saturates the foil layer *before* it blends and therefore
+never touches the artwork. It's a custom property rather than a literal so the
+`foil-hue` keyframe can carry per-layer saturation without forking the
+animation.
+
 **Cosmic always uses the standard frame**, never the full-bleed one — its symbol
 layer needs an art window to read against. A Full-Art-capable card upgraded to
 Cosmic therefore goes back to the standard frame. Cosmic foils the frame and the
-artwork as two separate layers rather than one overlay, because the light Pokémon
-frame wants a soft film while the darker artwork wants colour-dodge; a single
-pass across both leaves the art looking milky.
+artwork as two separate layers rather than one overlay — which is also what lets
+each use the blend mode it needs (see above): a soft film on the light Pokémon
+frame, `screen` on the photography. A single pass across both leaves the art
+looking milky.
+
+**The pointer-tracked sheen must never slide off its own box.** The foil is an
+oversized gradient moved around by `--px`/`--py`. For a background image larger
+than its box, `background-position: P%` puts it at an offset of
+`-(S-100)·P/100`, so the image only still covers the box while `P` stays inside
+0–100%. A `1.6` multiplier meant any `--px` or `--py` above **62.5** pushed it
+off, the browser tiled it, and the tile edge crossed the card as a hard seam —
+visible as a quadrant split whenever the pointer sat in the lower-right.
+
+The multiplier is now `1`, so `P` cannot leave the safe range whatever the size
+is, and the travel is bought back with a bigger image (`460%` gives 360% of
+movement against the broken version's 384%) with the stripe stops scaled by
+`340/460` so the bands keep the width they were tuned at. `background-repeat`
+is `no-repeat` as a backstop: with nothing left to tile, a future regression
+shows up immediately instead of as a seam subtle enough to need reporting.
+
+Measured as the largest single-step jump in mean column/row luma with the
+artwork differenced out — a gradient is smooth everywhere, so any large jump
+*is* a seam:
+
+| `--px`/`--py` | before | after |
+|---|---|---|
+| 50 / 50 | 1.1 | 1.1 |
+| 70 / 70 | **8.5** | 0.9 |
+| 85 / 85 | **10.7** | 0.8 |
+| worst over a full 0–100 sweep of both axes | **10.7** | **1.2** |
+
+Note the seam vanished again at 100/100, which is why it needed a sweep rather
+than spot checks: the tile edge enters the card around 62.5 and leaves it again
+before the extreme, so testing only the corners finds nothing.
+
+**Glare streaks are soft-edged gradients, not solid bars.** The foil is smooth
+everywhere else, so a flat `fillRect` streak made its two edges the only hard
+transitions in the whole layer — which reads as bands ruled across the artwork
+rather than as light falling on it. Measured on a holo card with the artwork
+differenced out so only the foil remained:
+
+| | solid bar | soft gradient |
+|---|---|---|
+| max luma jump between neighbouring pixels | 55.0 | **16.2** |
+| 99.9th percentile | 47.0 | **7.9** |
+| jumps over 6 | 96 | **19** |
+| mean brightness the foil adds | 38.5 | 42.2 |
+
+Brightness is tracked alongside because "smoother" must not quietly mean
+"fainter" — the soft version is marginally brighter, since it's wider and more
+opaque to compensate for spreading the same light over a falloff. The CSS foil
+never had this problem: it was already built from interpolated gradient stops,
+so this brings the export closer to what the page shows.
 
 **Text always renders above the foil.** On the page the card body deliberately
 avoids creating a stacking context so the title, flavour text, stats and credits
 can sit at a layer above the glint; the canvas exporter mirrors this by drawing
 in three passes — backdrop, foil, then text. Without it the shimmer washes out
 exactly the words you need to read.
+
+**The full-art bottom stack shares one backdrop.** Flavour text, stats and the
+credit line live in a single `.card-bottom` wrapper that carries the scrim and
+sizes itself to its contents. They were previously three separately positioned
+bands (`bottom: 48px / 14px / 0`) each painting its own `rgba(0,0,0,.72)`; the
+offsets were hand-tuned and didn't actually meet, so a few pixels of bright
+artwork showed through between the stats and the credit, reading as a stray
+horizontal rule — and the seams moved whenever a font size changed. In the
+standard frame the same wrapper is a transparent pass-through.
 
 **Full-art text also carries a dark halo**, since it sits straight on the
 artwork with no box behind it. In CSS that's a two-part `text-shadow` — one
@@ -120,29 +298,80 @@ rendered once and blitted for the whole loop.
 Duplicates of a card at your **exact owned rarity** upgrade it one step; pulling a
 higher rarity than you own replaces it.
 
+### Viewing the collection at a chosen tier
+
+`owned[id]` stores only the *highest* tier held, and holding a tier implies
+every tier below it. So the grid can be re-pointed at any tier — the **Show
+cards as** dropdown, right of the sort control.
+
+It's a **ceiling, not an assignment**. A card owned at Standard stays Standard
+however high the dropdown goes; the grid never shows a tier that hasn't been
+earned. And because Full Art doesn't exist for every card, a `fullArt => false`
+card asked for Full Art steps *down* to Holofoil rather than rendering in a
+frame it was never drawn for. `RG.shownRank(card)` resolves both rules and is
+the single place that decides what a card displays as.
+
+Two consequences worth knowing:
+
+- **Exports follow the view.** The right-click menu defaults to the tier on
+  screen rather than the tier owned, so an embed link is the card you're
+  looking at. Every owned tier is still in that dropdown — the setting changes
+  the default, not the options.
+- **Picking a tier there repaints the card immediately**, in the grid and in the
+  expanded overlay, with the menu left open so the choice is visible before
+  it's acted on. Those per-card pins are session-only and are cleared whenever
+  the global dropdown changes, since a new global tier re-baselines everything.
+
+Cards in the **reveal stack are never repainted** — they show the tier that was
+actually pulled, and rewriting that from a view preference would edit the pull
+in front of the person who just made it. Sorting by Rarity likewise ranks by
+the tier owned, or pinning the grid to Standard would flatten the sort into a
+tie-break on titles.
+
 ### Saves
 
 Progress lives in `localStorage`, AES-GCM encrypted via WebCrypto (PBKDF2-derived
 key, per-install random salt). This is tamper-resistance, not Fort Knox — the key
 material necessarily lives client-side. Clear site data to wipe your collection.
 
+The save carries the collection, packs opened, theme, signature and the display
+tier. Anything loaded from it is validated before use — a `displayRank` that
+doesn't index `RG.RARITIES` falls back to "highest owned" rather than rendering
+a tier that doesn't exist.
+
 ### Interactions
 
 - **Hover** a card — Balatro-style 3D tilt with a tracked glare
 - **Click** — expands to center, dims background (Esc / click-away closes)
-- **Right-click** — copy embed link / save / share, with a rarity picker. Only
-  owned tiers are exportable — owning a tier unlocks it plus every tier below
-  it, never above.
+- **Right-click** — copy embed link / save / share, with a rarity picker that
+  repaints the card as you change it. Only owned tiers are exportable — owning
+  a tier unlocks it plus every tier below it, never above.
+- **Show cards as** — pin the whole grid to a tier, capped by what you own
+
+**Nothing in the app is selectable.** Clicking through a pack is repeated clicks
+in one spot, and the browser reads the second as a double-click and selects the
+word beneath it — Opera GX then pops its Search/Copy/Snapshot bar over the card.
+The cards had already opted out, but everything they sit on top of (the counter,
+"PACK COMPLETE", the buttons that appear right where you were clicking) had not,
+so the selection landed there instead. `user-select: none` goes on `body` rather
+than `#app`, because the overlays, context menu and modals are all siblings of
+it; `input`, `textarea` and `[contenteditable]` opt back in, which is what keeps
+the minted embed link copyable.
+
+Testing note: `page.mouse.click(x, y, {clickCount: 2})` does **not** produce a
+text selection in headless Chrome — verified against a plain `<p>`. Only an
+explicit `down`/`up` sequence with an escalating `clickCount`, or a drag, does.
+A selection test built on `clickCount` alone passes against a page that is
+still broken.
 
 ### Export
 
-| Path | Format | Typical size |
-|---|---|---|
-| Embed link, share | **Animated WebP** | 1.4–3.0 MB |
-| Save to disk | **Animated GIF** | 1.5–6.5 MB |
+Everything ships as **animated WebP** — embed links, shares and downloads
+alike, 1.4–3.0 MB per card. GIF survives only as the fallback for browsers that
+can't encode WebP.
 
-Both render 640px wide at 20 fps from the identical pipeline — only the final
-compression differs.
+All three encoders render 640px wide at 20 fps from the identical pipeline —
+only the final compression differs.
 
 **The foil period and the art window are separate.** Foil sweeps every
 `LOOP_SECONDS` (4 s); animated art plays up to `ART_SECONDS` (12 s) and sets
@@ -160,7 +389,62 @@ a 12-second card reads as broken rather than slow. A ~6 s clip gets 2 sweeps of
 time both scale almost linearly with frame count. Past it the sampling rate
 drops and the clip keeps its full duration at a lower frame rate.
 
-**Why WebP for embeds.** All three viable formats were tested in Discord:
+### Making exports fast
+
+A cold export is ~120 frames of card to draw and then compress, and profiling
+put it at roughly half each — neither half has a trick that makes it vanish.
+So the work is attacked three ways: do it in parallel, do it earlier, and never
+do it twice.
+
+**Frames are compressed in a worker pool.** `canvas.toBlob('image/webp')` is one
+frame at a time on the main thread; `OffscreenCanvas.convertToBlob` is the same
+encoder available inside a worker, and frames don't reference each other, so
+`webp.js` runs `min(4, cores-1)` of them. Frames are structured-cloned rather
+than transferred — transferring detaches the caller's buffers and the
+size-retry loop re-encodes the very same frames at a lower quality, and a 2 MB
+memcpy is nothing beside a 16 ms compress. The whole thing degrades to the
+inline encoder if workers or `OffscreenCanvas` aren't there.
+
+Measured on `galaxy-brain` / Cosmic (121 frames, 640px), 4 workers:
+
+| | inline | pooled |
+|---|---|---|
+| full export | 5257 ms | **1779 ms** |
+| output | 3 080 498 bytes | **identical, byte for byte** |
+
+End to end, per card: Cosmic 4.5 s → **1.9 s**, Holofoil 2.6 s → **0.85 s**.
+
+**Renders start when the right-click menu opens**, not when the button is
+clicked — that's the strongest signal of intent available before the click
+itself, and the seconds spent reading a menu are seconds the render doesn't
+have to cost. Changing the tier in that menu warms the new tier too.
+Speculation is skipped entirely when there's no signature yet, since the render
+would be thrown away the moment the user is prompted for one.
+
+Only **one speculative render runs at a time** — right-clicking three cards
+would otherwise leave three multi-second jobs fighting for the same core, and
+the newest is the one being looked at. A superseded job is abandoned at its
+next frame boundary. A job someone has actually asked for is never abandoned,
+and a click that lands mid-warmup attaches to the running job and promotes it
+to full speed rather than starting a duplicate.
+
+Speculative renders yield through `requestIdleCallback` instead of
+`setTimeout(0)`. That's the whole reason the tilt animation survives them —
+measured during a background Cosmic render, rAF gaps stayed at a 4.2 ms median
+with a 31 ms worst case.
+
+**Finished blobs are cached**, keyed on card id, *art file*, tier, format,
+theme and signature. The art file is in there because a pool-backed card draws
+different art per page load, so the id alone would serve yesterday's bird.
+Six entries, oldest evicted, failures never cached; anything passing a tuning
+option (`width`, `quality`, `fps`…) bypasses the cache in both directions so a
+tuning run can't poison what the UI reads. A repeat export drops from ~1300 ms
+to 0.
+
+**Why WebP everywhere.** GIF is the more familiar download format, but the
+quality doesn't justify its size: 255 palette entries against WebP's full
+24-bit colour, no alpha, and roughly four times the bytes for the same frames.
+All three candidates were tested in Discord:
 
 | Link ends in | Discord renders it as |
 |---|---|
@@ -175,6 +459,13 @@ outright: 24-bit colour instead of a 255-entry palette (no banding, none of the
 "morphing" artefacts the GIF encoder has to fight), a real alpha channel so the
 rounded corners stay transparent, and roughly a quarter of the bytes.
 
+| Card | GIF | WebP |
+|---|---|---|
+| vibe-check / reverse | 1.51 MB | **1.42 MB** |
+| galaxy-brain / cosmic | 4.52 MB | **1.95 MB** |
+| this-is-fine / fullart | 6.50 MB | **1.71 MB** |
+| touch-grass / standard | 0.06 MB | **0.02 MB** |
+
 WebP encoding lives in [assets/js/webp.js](assets/js/webp.js): the browser
 compresses each frame via `canvas.toBlob('image/webp')` and the module unwraps
 those stills and re-wraps them as a RIFF animation (`VP8X` + `ANIM` +
@@ -186,8 +477,8 @@ The H.264 encoder and from-scratch MP4 muxer in
 up for anywhere that does autoplay video. `embedFmt` in
 [assets/js/cards.js](assets/js/cards.js) selects between all three.
 
-Everything below about palettes applies to the **GIF** path only — WebP has no
-palette to manage.
+Everything below about palettes applies to the **GIF fallback** only — WebP has
+no palette to manage.
 
 ### Keeping the GIF small
 

@@ -181,6 +181,11 @@ window.RG = window.RG || {};
         RG.state.opened = loaded.opened || 0;
         RG.state.theme = loaded.theme === 'mtg' ? 'mtg' : 'pokemon';
         RG.state.signature = cleanSig(loaded.signature || '');
+        // a tier outside the table would render nothing at all, so only take
+        // a value that indexes RG.RARITIES; anything else means "highest owned"
+        const tier = loaded.displayRank;
+        RG.state.displayRank =
+          Number.isInteger(tier) && tier >= 0 && tier <= RG.MAX_RANK ? tier : null;
       }
     } catch (err) {
       console.error('Storage init failed; running without persistence.', err);

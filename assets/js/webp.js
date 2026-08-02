@@ -87,6 +87,104 @@ RG.webp = (() => {
     return !!blob && blob.type === 'image/webp';
   };
 
+  /* ---------------- encode pool ----------------
+
+     Compressing one frame costs ~16 ms and a card is 80-120 frames, so the
+     encode alone is ~2 s of the export — and on the main thread it also runs
+     one frame at a time while the page can't do anything else. The work is
+     embarrassingly parallel (frames don't reference each other), so hand it to
+     a pool of workers: OffscreenCanvas.convertToBlob is the worker-side
+     equivalent of canvas.toBlob and comes from the same encoder, so the bytes
+     are identical to what the single-threaded path produced.
+
+     Everything here degrades to the inline path if workers or OffscreenCanvas
+     aren't available. */
+
+  const WORKER_SRC = `
+    self.onmessage = async (e) => {
+      const { id, W, H, data, quality } = e.data;
+      try {
+        const cv = new OffscreenCanvas(W, H);
+        const ctx = cv.getContext('2d');
+        ctx.putImageData(new ImageData(data, W, H), 0, 0);
+        const blob = await cv.convertToBlob({ type: 'image/webp', quality });
+        const buf = await blob.arrayBuffer();
+        self.postMessage({ id, buf }, [buf]);
+      } catch (err) {
+        self.postMessage({ id, error: String(err && err.message || err) });
+      }
+    };`;
+
+  const poolSize = () =>
+    Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+
+  let pool = null;        // { workers, jobs, nextId } once started, false if unavailable
+
+  function startPool() {
+    if (pool !== null) return pool;
+    pool = false;
+    try {
+      if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' ||
+          !OffscreenCanvas.prototype.convertToBlob) return pool;
+      const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+      const jobs = new Map();
+      const workers = [];
+      for (let i = 0; i < poolSize(); i++) {
+        const w = new Worker(url);
+        w.onmessage = (e) => {
+          const { id, buf, error } = e.data;
+          const job = jobs.get(id);
+          if (!job) return;
+          jobs.delete(id);
+          error ? job.reject(new Error(error)) : job.resolve(new Uint8Array(buf));
+        };
+        // A worker that dies takes its in-flight frame with it; fail that frame
+        // so the caller can fall back rather than hanging forever.
+        w.onerror = () => { for (const [, j] of jobs) j.reject(new Error('encode worker failed')); jobs.clear(); };
+        workers.push(w);
+      }
+      URL.revokeObjectURL(url);
+      pool = { workers, jobs, nextId: 1 };
+    } catch {
+      pool = false;
+    }
+    return pool;
+  }
+
+  /**
+   * Compress `frames` in parallel, resolving to raw WebP bytes per frame in
+   * the original order. Rejects if the pool can't be used, so callers fall
+   * back to the inline encoder.
+   *
+   * Frames are structured-cloned rather than transferred: transferring detaches
+   * the caller's buffers, and the size-retry loop re-encodes the very same
+   * frames at a lower quality. A 2 MB memcpy per frame is nothing next to a
+   * 16 ms compress.
+   */
+  function encodeFramesPooled({ W, H, frames }, quality, onProgress) {
+    const p = startPool();
+    if (!p) return Promise.reject(new Error('no encode pool'));
+
+    const out = new Array(frames.length);
+    let next = 0, done = 0;
+
+    const runOne = (worker) => {
+      if (next >= frames.length) return Promise.resolve();
+      const i = next++;
+      const id = p.nextId++;
+      return new Promise((resolve, reject) => {
+        p.jobs.set(id, { resolve, reject });
+        worker.postMessage({ id, W, H, data: frames[i].data, quality });
+      }).then(bytes => {
+        out[i] = bytes;
+        if (onProgress && ++done % 8 === 0) onProgress(done / frames.length);
+        return runOne(worker);           // this worker takes the next frame
+      });
+    };
+
+    return Promise.all(p.workers.map(runOne)).then(() => out);
+  }
+
   /**
    * @param {{W:number,H:number,frames:{data:Uint8ClampedArray,ms:number}[]}} timeline
    * @returns {Promise<Blob>} image/webp
@@ -95,22 +193,40 @@ RG.webp = (() => {
     if (!frames.length) throw new Error('nothing to encode');
     const quality = opts.quality ?? QUALITY;
 
-    const cv = document.createElement('canvas');
-    cv.width = W; cv.height = H;
-    const ctx = cv.getContext('2d');
+    /* Compressed stills, one per frame. The pool does this in parallel; if it
+       isn't available (or falls over) the inline encoder produces the same
+       bytes, just serially. */
+    let stills = null;
+    if (opts.pooled !== false) {
+      try {
+        stills = await encodeFramesPooled({ W, H, frames }, quality, opts.onProgress);
+      } catch (err) {
+        console.warn('WebP encode pool unavailable; encoding inline.', err);
+        stills = null;
+      }
+    }
+
+    if (!stills) {
+      const cv = document.createElement('canvas');
+      cv.width = W; cv.height = H;
+      const ctx = cv.getContext('2d');
+      stills = [];
+      for (let i = 0; i < frames.length; i++) {
+        ctx.clearRect(0, 0, W, H);
+        ctx.putImageData(new ImageData(frames[i].data, W, H), 0, 0);
+        const blob = await new Promise(r => cv.toBlob(r, 'image/webp', quality));
+        if (!blob) throw new Error('this browser cannot encode WebP');
+        stills.push(new Uint8Array(await blob.arrayBuffer()));
+        if (opts.onProgress && i % 8 === 0) opts.onProgress(i / frames.length);
+      }
+    }
 
     const body = [];
     let anyAlpha = false;
     for (let i = 0; i < frames.length; i++) {
-      const f = frames[i];
-      ctx.clearRect(0, 0, W, H);
-      ctx.putImageData(new ImageData(f.data, W, H), 0, 0);
-      const blob = await new Promise(r => cv.toBlob(r, 'image/webp', quality));
-      if (!blob) throw new Error('this browser cannot encode WebP');
-      const { data, hasAlpha } = frameChunks(new Uint8Array(await blob.arrayBuffer()));
+      const { data, hasAlpha } = frameChunks(stills[i]);
       anyAlpha = anyAlpha || hasAlpha;
-      body.push(anmf(W, H, Math.max(10, Math.round(f.ms)), data));
-      if (opts.onProgress && i % 8 === 0) opts.onProgress(i / frames.length);
+      body.push(anmf(W, H, Math.max(10, Math.round(frames[i].ms)), data));
     }
 
     /* VP8X advertises the canvas size and which optional features follow.
@@ -130,5 +246,5 @@ RG.webp = (() => {
                     { type: 'image/webp' });
   }
 
-  return { encode, supported, QUALITY };
+  return { encode, supported, QUALITY, poolSize };
 })();

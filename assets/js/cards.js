@@ -42,14 +42,16 @@ window.RG = window.RG || {};
           <div class="card-art">
             <div class="foil foil-art"></div>
           </div>
-          <p class="card-usage"></p>
-          <footer class="card-stats">
-            <span class="stat">PWR<b></b></span>
-            <span class="stat">WIT<b></b></span>
-            <span class="stat">CHS<b></b></span>
-            <span class="rarity-gem"></span>
-          </footer>
-          <p class="card-sig"></p>
+          <div class="card-bottom">
+            <p class="card-usage"></p>
+            <footer class="card-stats">
+              <span class="stat">PWR<b></b></span>
+              <span class="stat">WIT<b></b></span>
+              <span class="stat">CHS<b></b></span>
+              <span class="rarity-gem"></span>
+            </footer>
+            <p class="card-sig"></p>
+          </div>
         </div>
         <div class="foil foil-full"></div>
         <div class="cosmic-layer"></div>
@@ -62,27 +64,24 @@ window.RG = window.RG || {};
     pill.textContent = type.abbr || type.name;
     pill.title = type.name;
 
-    // Video art needs a <video>; both are object-fit: cover so the art always
-    // fills the frame and crops, whatever its native aspect ratio.
+    // Art fills its window and crops, whatever its native aspect ratio, unless
+    // the card asks to be shown whole (cards.php `fit`) — see main.css.
     const art = el.querySelector('.card-art');
+    if (card.fit) art.dataset.fit = card.fit;
     let media;
     if (card.vid) {
-      media = document.createElement('video');
-      media.muted = true;
-      media.loop = true;
-      media.playsInline = true;
-      media.preload = 'metadata';
-      /* Card art is decoration, not a video player. Chrome otherwise floats a
-         picture-in-picture button (and a cast button on some setups) over the
-         artwork on hover, which reads as part of the card. */
-      media.disablePictureInPicture = true;
-      media.disableRemotePlayback = true;
-      media.setAttribute('disablepictureinpicture', '');
-      media.setAttribute('disableremoteplayback', '');
-      media.setAttribute('controlslist', 'nodownload nofullscreen noremoteplayback noplaybackrate');
+      /* Video art is painted into a <canvas> from a video element that never
+         enters the document. Browsers decorate <video> with their own floating
+         controls — Chrome offers picture-in-picture and cast, Opera GX adds a
+         video pop-out button — and those hover over the artwork looking like
+         part of the card. disablePictureInPicture only covers Chromium's own;
+         Opera's is proprietary and ignores it. A canvas is not a media element,
+         so there is nothing for any of them to attach to.
+         The clip still decodes normally; it just isn't in the DOM. */
+      media = document.createElement('canvas');
+      media.setAttribute('role', 'img');
       media.setAttribute('aria-label', card.title);
-      media.src = card.img;
-      observePlayback(media);
+      observePlayback(paintVideoInto(media, card.img));
     } else {
       media = document.createElement('img');
       media.loading = 'lazy';
@@ -107,25 +106,85 @@ window.RG = window.RG || {};
     sigEl.textContent = sig ? `Illus. ${sig}` : '';
     sigEl.hidden = !sig;
 
-    if (rk === 'cosmic') sprinkleCosmic(el.querySelector('.cosmic-layer'), type.sym);
+    // The cosmic starfield is the card's own emoji — it's the one glyph chosen
+    // for that specific joke. The type symbol is the fallback for a card that
+    // never got one, since a blank starfield would just look broken.
+    if (rk === 'cosmic') sprinkleCosmic(el.querySelector('.cosmic-layer'), card.emoji || type.sym);
     if (interactive) attachTilt(el);
     return el;
   };
+
+  /* canvas -> the detached video driving it. Keyed weakly so a card removed
+     from the grid takes its decoder with it. */
+  const painters = new WeakMap();
+
+  /**
+   * Drive `canvas` from a video element that is never added to the document.
+   *
+   * Painting per decoded frame rather than per animation frame: the source is
+   * 24-30 fps, so a plain requestAnimationFrame loop would blit the same
+   * picture twice out of every three calls on a 60 Hz display.
+   */
+  function paintVideoInto(canvas, src) {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.src = src;
+
+    const ctx = canvas.getContext('2d');
+    const perFrame = typeof video.requestVideoFrameCallback === 'function';
+    let handle = 0, running = false;
+
+    const paint = () => {
+      if (video.videoWidth && canvas.width !== video.videoWidth) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+      if (video.readyState >= 2) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (!running) return;
+      handle = perFrame ? video.requestVideoFrameCallback(paint)
+                        : requestAnimationFrame(paint);
+    };
+
+    painters.set(canvas, {
+      start() {
+        if (running) return;
+        running = true;
+        video.play?.().catch(() => {});
+        paint();
+      },
+      stop() {
+        running = false;
+        video.pause?.();
+        if (!handle) return;
+        if (perFrame) video.cancelVideoFrameCallback(handle);
+        else cancelAnimationFrame(handle);
+        handle = 0;
+      },
+    });
+
+    // paint a first frame even before playback starts, so the card is never blank
+    video.addEventListener('loadeddata', () => { if (!running) paint(); }, { once: true });
+    return canvas;
+  }
 
   /* A collection grid can hold a lot of video art, and decoding all of it at
      once is wasteful — only play what's actually on screen. */
   const playObserver = 'IntersectionObserver' in window
     ? new IntersectionObserver(entries => {
         for (const { target, isIntersecting } of entries) {
-          if (isIntersecting) target.play?.().catch(() => {});
-          else target.pause?.();
+          const painter = painters.get(target);
+          if (isIntersecting) painter?.start();
+          else painter?.stop();
         }
       }, { rootMargin: '200px' })
     : null;
 
-  function observePlayback(video) {
-    if (playObserver) playObserver.observe(video);
-    else video.autoplay = true;   // no observer: just let it run
+  function observePlayback(canvas) {
+    if (playObserver) playObserver.observe(canvas);
+    else painters.get(canvas)?.start();   // no observer: just let it run
   }
 
   function sprinkleCosmic(layer, sym) {
@@ -135,7 +194,10 @@ window.RG = window.RG || {};
       s.textContent = sym;
       s.style.left = (4 + Math.random() * 86) + '%';
       s.style.top = (4 + Math.random() * 88) + '%';
-      s.style.fontSize = (10 + Math.random() * 20) + 'px';
+      /* cqw, not px: the card is a size container (see main.css), so the
+         starfield scales with it like everything else. 4.35-13.04cqw is the
+         old 10-30px measured against the 230px reference card. */
+      s.style.fontSize = (4.35 + Math.random() * 8.7).toFixed(2) + 'cqw';
       s.style.setProperty('--dur', (2.2 + Math.random() * 3.4).toFixed(2) + 's');
       s.style.setProperty('--delay', (Math.random() * 4).toFixed(2) + 's');
       s.style.setProperty('--peak', (0.5 + Math.random() * 0.45).toFixed(2));
@@ -228,6 +290,26 @@ window.RG = window.RG || {};
     }
   };
 
+  /**
+   * Rebuild every on-screen preview of one card, in place.
+   *
+   * Scoped to the collection grid and the expanded overlay on purpose. A card
+   * in the reveal stack is showing the tier that was actually pulled, and
+   * repainting that from a view preference would rewrite the pull in front of
+   * the person who just made it.
+   */
+  RG.refreshCard = function (id) {
+    const card = RG.cardById[id];
+    const rank = card && RG.shownRank(card);
+    if (rank == null) return;
+    const sel = `.card[data-id="${CSS.escape(id)}"]`;
+    for (const scope of [document.getElementById('coll-grid'), slot]) {
+      for (const old of scope ? scope.querySelectorAll(sel) : []) {
+        old.replaceWith(RG.buildCard(card, rank));
+      }
+    }
+  };
+
   function closeExpand() {
     if (!expandOpen) return;
     expandOpen = false;
@@ -288,7 +370,13 @@ window.RG = window.RG || {};
       opt.textContent = RG.rarityName(r) + (r === ownedRank ? ' • owned' : '');
       ctxRarity.appendChild(opt);
     }
-    ctxRarity.value = RG.rarityKey(ownedRank);
+    /* Default to the tier on screen, not the tier owned. The grid can be
+       pinned to a lower tier, and an export that quietly ignored that would
+       hand back a card the user isn't looking at. Resolved the same way the
+       grid resolves it, so the value always matches an option that exists. */
+    const want = Math.min(shownRank ?? ownedRank, ownedRank);
+    const pick = RG.supportedRanks(card).filter(r => r <= want).pop() ?? 0;
+    ctxRarity.value = RG.rarityKey(pick);
 
     menu.querySelector('[data-act="share"]').style.display = navigator.share ? '' : 'none';
 
@@ -296,7 +384,23 @@ window.RG = window.RG || {};
     const mw = menu.offsetWidth, mh = menu.offsetHeight;
     menu.style.left = Math.min(x, innerWidth - mw - 10) + 'px';
     menu.style.top = Math.min(y, innerHeight - mh - 10) + 'px';
+
+    /* Start rendering now. Opening this menu is the strongest signal of intent
+       there is short of the click, and the render is seconds of work — the time
+       spent reading the menu is time it doesn't have to cost later. It runs at
+       idle priority and the click attaches to the same job. */
+    RG.exporter.prerender(card, ctxRarity.value);
   }
+
+  /* Picking a tier here repaints the card behind the menu, so the choice is
+     visible before it's acted on — the menu stays open and the export buttons
+     below now refer to what's on screen. */
+  ctxRarity.addEventListener('change', () => {
+    if (!ctxCard) return;
+    const rank = RG.RARITIES.findIndex(r => r.key === ctxRarity.value);
+    if (rank >= 0) RG.setViewOverride(ctxCard.id, rank);
+    RG.exporter.prerender(ctxCard, ctxRarity.value);   // warm the new tier too
+  });
 
   document.addEventListener('contextmenu', e => {
     const el = e.target.closest('.card[data-id]');
@@ -335,47 +439,49 @@ window.RG = window.RG || {};
 
     exporting = true;
 
-    /* Embeds go out as animated WebP, verified rendering inline and looping in
-       Discord. It wins on every axis that mattered: 24-bit colour instead of a
-       255-entry palette (no banding, no morphing artefacts), a real alpha
-       channel so the rounded corners stay transparent, and roughly a quarter of
-       the bytes of the equivalent GIF.
+    /* Everything ships as animated WebP — embeds, shares and downloads alike.
+       It wins on every axis that mattered: 24-bit colour instead of a 255-entry
+       palette (no banding, none of the morphing artefacts the GIF encoder has
+       to fight), a real alpha channel so the rounded corners stay transparent,
+       and roughly a quarter of the bytes. Verified rendering inline and looping
+       in Discord.
 
        MP4 is not used despite compressing comparably, because Discord renders a
        .mp4 link as a click-to-play video player — the autoplay-loop treatment
        Tenor gets is Discord's provider allowlist, not something a URL or meta
        tag can opt into.
 
-       Save-to-disk stays GIF: it's the file you can drop anywhere without
-       thinking. Browsers without WebP encoding fall back to GIF for embeds. */
-    const embedFmt = (RG.webp && await RG.webp.supported()) ? 'webp' : 'gif';
+       GIF survives only as the fallback for browsers that can't encode WebP. */
+    const exportFmt = await RG.exporter.format();
 
+    /* Goes through the export cache, so this either returns a render that was
+       started when the menu opened, attaches to one still in flight, or hands
+       back a finished blob outright when the same card was exported before. */
     const build = fmt => {
       RG.toast('Rendering card…');
-      const opts = { onProgress: p => RG.toast(`Rendering card… ${Math.round(p * 100)}%`) };
-      if (fmt === 'webp') return RG.exporter.toWebpBlob(card, rankKey, opts);
-      if (fmt === 'mp4')  return RG.exporter.toMp4Blob(card, rankKey, opts);
-      return RG.exporter.toGifBlob(card, rankKey, opts);
+      return RG.exporter.exportBlob(card, rankKey, fmt, {
+        onProgress: p => RG.toast(`Rendering card… ${Math.round(p * 100)}%`),
+      });
     };
 
     try {
       if (act === 'link') {
-        const blob = await build(embedFmt);
+        const blob = await build(exportFmt);
         RG.toast('Minting embed link…');
-        const url = await RG.share.mint(card, rank, blob, embedFmt);
+        const url = await RG.share.mint(card, rank, blob, exportFmt);
         if (await RG.copyText(url)) RG.toast('Embed link copied — paste it in Discord 🔗');
         else RG.promptLink(url);   // never strand a link we've already minted
       } else if (act === 'save') {
-        const blob = await build('gif');
+        const blob = await build(exportFmt);
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = RG.exporter.filename(card, rankKey, 'gif');
+        a.download = RG.exporter.filename(card, rankKey, exportFmt);
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 4000);
         RG.toast(`Saved “${card.title}” 🎞️`);
       } else if (act === 'share') {
-        const blob = await build(embedFmt);
-        const file = new File([blob], RG.exporter.filename(card, rankKey, embedFmt),
+        const blob = await build(exportFmt);
+        const file = new File([blob], RG.exporter.filename(card, rankKey, exportFmt),
                              { type: blob.type });
         if (navigator.canShare && !navigator.canShare({ files: [file] })) {
           await navigator.share({ title: card.title, text: card.usage });

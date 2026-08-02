@@ -1,6 +1,8 @@
-/* Renders a card at a chosen rarity to an animated GIF for embed links.
-   Fully self-contained: ImageDecoder for animated source art, median-cut
-   palette quantization, and a from-scratch GIF89a/LZW encoder. */
+/* Renders a card at a chosen rarity to an animated image.
+   One pipeline, three encoders: animated WebP (what ships — see cards.js),
+   H.264/MP4, and a GIF fallback. Fully self-contained — ImageDecoder for
+   animated source art, median-cut palette quantization, and a from-scratch
+   GIF89a/LZW encoder, with the WebP and MP4 muxers in their own modules. */
 window.RG = window.RG || {};
 
 RG.exporter = (() => {
@@ -179,12 +181,26 @@ RG.exporter = (() => {
     ctx.closePath();
   }
 
-  function drawCover(ctx, im, x, y, w, h) {
+  /* Letterbox colour for `contain` art. Matches `.card-art`'s background in
+     main.css, so an exported card and its on-page preview agree. */
+  const ART_BACKDROP = '#0b0d12';
+
+  /**
+   * Paint artwork into its window.
+   *
+   * `cover` scales up until the window is full and crops the overflow — right
+   * for nearly everything, since a card frame is a fixed aspect and source art
+   * is not. `contain` scales down until the whole image fits and letterboxes
+   * the remainder, for art whose edges carry meaning.
+   */
+  function drawArt(ctx, im, x, y, w, h, fit) {
     const iw = im.width, ih = im.height;
-    const s = Math.max(w / iw, h / ih);
+    const s = fit === 'contain' ? Math.min(w / iw, h / ih) : Math.max(w / iw, h / ih);
     const dw = iw * s, dh = ih * s;
     ctx.save();
     ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+    // cover always paints over every pixel; contain has bands to fill first
+    if (fit === 'contain') { ctx.fillStyle = ART_BACKDROP; ctx.fillRect(x, y, w, h); }
     ctx.drawImage(im, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
     ctx.restore();
   }
@@ -225,17 +241,36 @@ RG.exporter = (() => {
     ctx.fillStyle = g;
     ctx.fillRect(x, y, w, h);
 
-    // diagonal glare streaks — translate by one period over the loop
+    /* Diagonal glare streaks — translate by one period over the loop.
+
+       Each streak is a soft gradient, not a solid bar. A flat fillRect leaves a
+       step at both edges, and because the foil is otherwise perfectly smooth
+       those two steps are the only hard edges in the whole layer — so they read
+       as bands ruled across the artwork rather than as light falling on it.
+       Measured on a holo card with the artwork differenced out, a solid bar
+       produced luma jumps of up to 55 between neighbouring pixels.
+
+       Wider and slightly more opaque than the old bar to keep the same
+       presence, since a soft profile spreads the same light further. */
     ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = 0.22;
-    ctx.fillStyle = '#ffffff';
+    ctx.globalAlpha = 0.3;
     const spacing = w / 3;
     const offset = t * spacing;
+    const sw = w / 6;
+    const streak = ctx.createLinearGradient(0, 0, sw, 0);
+    streak.addColorStop(0,    'rgba(255,255,255,0)');
+    streak.addColorStop(0.18, 'rgba(255,255,255,0.28)');
+    streak.addColorStop(0.5,  'rgba(255,255,255,1)');
+    streak.addColorStop(0.82, 'rgba(255,255,255,0.28)');
+    streak.addColorStop(1,    'rgba(255,255,255,0)');
+    ctx.fillStyle = streak;
     for (let i = -3; i < 7; i++) {
       ctx.save();
+      // gradients are painted through the current transform, so this one
+      // travels with each streak rather than needing to be rebuilt per bar
       ctx.translate(x + i * spacing + offset, y);
       ctx.transform(1, 0, -0.45, 1, 0, 0);
-      ctx.fillRect(0, 0, w / 14, h);
+      ctx.fillRect(0, 0, sw, h);
       ctx.restore();
     }
 
@@ -318,6 +353,9 @@ RG.exporter = (() => {
     cv.width = W; cv.height = H;
     const ctx = cv.getContext('2d');
     const im = artOverride || await artStill(card);
+    // Full art is a full-bleed frame by definition — there is no window to
+    // letterbox inside, so it ignores `fit` and always covers.
+    const fit = isFullLayout ? 'cover' : (card.fit || 'cover');
 
     const R = 40, B = 28; // corner radius, border
     rr(ctx, 0, 0, W, H, R);
@@ -334,7 +372,7 @@ RG.exporter = (() => {
 
     if (isFullLayout) {
       ctx.save(); rr(ctx, B, B, W - B * 2, H - B * 2, R - 14); ctx.clip();
-      drawCover(ctx, im, B, B, W - B * 2, H - B * 2);
+      drawArt(ctx, im, B, B, W - B * 2, H - B * 2, fit);
       let g = ctx.createLinearGradient(0, B, 0, 220);
       g.addColorStop(0, 'rgba(0,0,0,0.68)'); g.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = g; ctx.fillRect(B, B, W - B * 2, 220);
@@ -345,7 +383,7 @@ RG.exporter = (() => {
     } else {
       const ax = pad, ay = 150, aw = W - pad * 2, ah = 470;
       ctx.save(); rr(ctx, ax, ay, aw, ah, 14); ctx.clip();
-      drawCover(ctx, im, ax, ay, aw, ah);
+      drawArt(ctx, im, ax, ay, aw, ah, fit);
       ctx.restore();
       ctx.lineWidth = 5; ctx.strokeStyle = theme.boxEdge;
       rr(ctx, ax, ay, aw, ah, 14); ctx.stroke();
@@ -367,7 +405,9 @@ RG.exporter = (() => {
     }
 
     return {
-      cv, W, H, R, pad, im, theme, type, isFullLayout,
+      cv, W, H, R, pad, im, fit, theme, type, isFullLayout,
+      // cosmic starfield glyph: the card's own emoji, type symbol as fallback
+      sym: card.emoji || type.sym,
       uy, uh, sy, sh, sw,
       artRect: isFullLayout ? [B, B, W - B * 2, H - B * 2] : [pad, 150, W - pad * 2, 470],
       artRadius: isFullLayout ? R - 14 : 14,
@@ -474,19 +514,19 @@ RG.exporter = (() => {
 
   /** Paint the animated foil for this rarity at loop phase `t`. */
   function paintFoil(ctx, geo, rankKey, t) {
-    const { W, H, R, im, theme, type, artRect, artRadius, seed } = geo;
+    const { W, H, R, im, fit, theme, sym, artRect, artRadius, seed } = geo;
     if (rankKey === 'reverse') {
       applyFoil(ctx, 0, 0, W, H, t, R);
       // re-draw art so the foil reads as "everything but the image"
       ctx.save(); rr(ctx, ...artRect, artRadius); ctx.clip();
-      drawCover(ctx, im, ...artRect); ctx.restore();
+      drawArt(ctx, im, ...artRect, fit); ctx.restore();
       ctx.lineWidth = 5; ctx.strokeStyle = theme.boxEdge;
       rr(ctx, ...artRect, artRadius); ctx.stroke();
     } else if (rankKey === 'holo') {
       applyFoil(ctx, ...artRect, t, artRadius);
     } else if (rankKey === 'fullart' || rankKey === 'cosmic') {
       applyFoil(ctx, 0, 0, W, H, t, R);
-      if (rankKey === 'cosmic') drawCosmicSymbols(ctx, type.sym, W, H, t, seed, R);
+      if (rankKey === 'cosmic') drawCosmicSymbols(ctx, sym, W, H, t, seed, R);
     }
   }
 
@@ -945,8 +985,24 @@ RG.exporter = (() => {
     return [{ t: 0, art: null, ms: 1000 }]; // nothing animates: single frame
   }
 
-  /** Render a timeline down to RGBA pixel buffers at export resolution. */
-  async function renderTimeline(card, rankKey, timeline, width, onProgress) {
+  /** Wait for a slice of idle time, capped so a busy page still makes progress. */
+  const idle = () => new Promise(r => (window.requestIdleCallback
+    ? requestIdleCallback(() => r(), { timeout: 100 })
+    : setTimeout(r, 16)));
+
+  /** Thrown to unwind a speculative render nobody wants any more. */
+  class Abandoned extends Error {
+    constructor() { super('render abandoned'); this.name = 'Abandoned'; }
+  }
+
+  /**
+   * Render a timeline down to RGBA pixel buffers at export resolution.
+   *
+   * `pace.background` is read every yield rather than captured, so a
+   * speculative render that the user then asks for is promoted to full speed
+   * mid-flight instead of dawdling to the end.
+   */
+  async function renderTimeline(card, rankKey, timeline, width, onProgress, pace) {
     // Static art means the base layer never changes, so build it once.
     const sharedBase = timeline[0].art ? null : await renderBase(card, rankKey, null);
     const probe = sharedBase || await renderBase(card, rankKey, timeline[0].art);
@@ -965,10 +1021,13 @@ RG.exporter = (() => {
       sctx.clearRect(0, 0, W, H);
       sctx.drawImage(full, 0, 0, W, H);
       frames.push({ data: sctx.getImageData(0, 0, W, H).data, ms: entry.ms });
-      if (onProgress && frames.length % 8 === 0) {
-        onProgress(frames.length / timeline.length);
-        // yield so the progress toast can actually paint
-        await new Promise(r => setTimeout(r, 0));
+      if (frames.length % 8 === 0) {
+        if (pace && pace.abandoned) throw new Abandoned();
+        if (onProgress) onProgress(frames.length / timeline.length);
+        /* Yield so the progress toast can actually paint. A background render
+           yields to idle time instead: warming the cache must never stutter
+           the card tilt the user is currently looking at. */
+        await (pace && pace.background ? idle() : new Promise(r => setTimeout(r, 0)));
       }
     }
     return { W, H, frames };
@@ -981,11 +1040,11 @@ RG.exporter = (() => {
    * don't export as black blocks.
    */
   async function encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress,
-                             dither, paletteEvery, artSeconds, maxFrames) {
+                             dither, paletteEvery, artSeconds, maxFrames, pace) {
     const timeline = await buildTimeline(card, rankKey,
       { loopSeconds, fps, artSeconds, maxFrames });
     const { W, H, frames: frameData } =
-      await renderTimeline(card, rankKey, timeline, width, onProgress);
+      await renderTimeline(card, rankKey, timeline, width, onProgress, pace);
 
     /* Palettes are built PER FRAME, into GIF's Local Color Table.
        A single global palette has to cover every colour the loop ever shows,
@@ -1107,14 +1166,14 @@ RG.exporter = (() => {
     const dither = opts.dither ?? DITHER;
     const paletteEvery = opts.paletteEvery ?? PALETTE_EVERY;
     let blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery,
-                                 opts.artSeconds, opts.maxFrames);
+                                 opts.artSeconds, opts.maxFrames, opts.pace);
     for (let attempt = 0; attempt < 2 && blob.size > maxBytes; attempt++) {
       const next = Math.max(MIN_WIDTH,
         Math.round(width * Math.sqrt(TARGET_BYTES / blob.size)));
       if (next >= width) break;
       width = next;
       blob = await encodeGifAt(card, rankKey, width, loopSeconds, fps, onProgress, dither, paletteEvery,
-                                 opts.artSeconds, opts.maxFrames);
+                                 opts.artSeconds, opts.maxFrames, opts.pace);
     }
     return blob;
   }
@@ -1141,7 +1200,7 @@ RG.exporter = (() => {
     const timeline = await buildTimeline(card, rankKey, {
       loopSeconds, fps, maxFrames: opts.maxFrames, artSeconds: opts.artSeconds,
     });
-    const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress);
+    const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress, opts.pace);
 
     return RG.mp4.encode(rendered, {
       bitrate: opts.bitrate ?? MP4_BITRATE,
@@ -1167,22 +1226,143 @@ RG.exporter = (() => {
     const timeline = await buildTimeline(card, rankKey, {
       loopSeconds, fps, maxFrames: opts.maxFrames, artSeconds: opts.artSeconds,
     });
-    const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress);
+    const rendered = await renderTimeline(card, rankKey, timeline, width, opts.onProgress, opts.pace);
 
     let quality = opts.quality ?? WEBP_QUALITY;
-    let blob = await RG.webp.encode(rendered, { quality, onProgress: opts.onProgress });
+    let blob = await RG.webp.encode(rendered,
+      { quality, onProgress: opts.onProgress, pooled: opts.pooled });
     /* Quality is a direct dial on size, so unlike the GIF path there's no need
        to re-render at a smaller width — just recompress the frames we have. */
     for (let attempt = 0; attempt < 2 && blob.size > (opts.maxBytes ?? MAX_BYTES); attempt++) {
       quality = Math.max(0.4, quality - 0.15);
-      blob = await RG.webp.encode(rendered, { quality, onProgress: opts.onProgress });
+      blob = await RG.webp.encode(rendered,
+        { quality, onProgress: opts.onProgress, pooled: opts.pooled });
     }
     return blob;
   }
 
-  const filename = (card, rankKey, ext = 'gif') => `${card.id}-${rankKey}.${ext}`;
+  const filename = (card, rankKey, ext = 'webp') => `${card.id}-${rankKey}.${ext}`;
+
+  /* ---------------- export cache + speculative rendering ----------------
+
+     A cold export is 2.5-4.5 s and roughly half of that is compressing frames,
+     half is drawing them; neither can be made to disappear. What can be done is
+     spend it earlier and never spend it twice.
+
+     Cached on everything that can change the bytes. Note `card.img`: a
+     pool-backed card draws different art per page load, so the id alone would
+     serve yesterday's bird. */
+
+  const EXPORT_CACHE_MAX = 6;      // blobs are 1.5-3 MB each
+  const exportCache = new Map();   // key -> { promise, progress, listeners, pace }
+
+  const exportKey = (card, rankKey, fmt) =>
+    [card.id, card.img, rankKey, fmt, RG.state.theme, RG.state.signature].join('|');
+
+  /* Anything that changes the encode has to bypass the cache, or a tuning run
+     would poison the entry the UI reads. The app never passes these; the test
+     harness always does. */
+  const TUNING_OPTS = ['width', 'quality', 'fps', 'loopSeconds', 'maxFrames',
+                       'artSeconds', 'maxBytes', 'dither', 'paletteEvery'];
+
+  /* Only one speculative render runs at a time. Right-clicking three cards in
+     a row would otherwise leave three multi-second jobs fighting each other
+     for the same core, and the newest is the one being looked at. A job
+     somebody has since asked for in earnest is never abandoned. */
+  let speculating = null;
+
+  function abandonSpeculative(except) {
+    if (!speculating || speculating === except) return;
+    const rec = exportCache.get(speculating);
+    if (rec && rec.pace.background) {
+      rec.pace.abandoned = true;
+      exportCache.delete(speculating);
+    }
+    speculating = null;
+  }
+
+  const encodeBlob = (card, rankKey, fmt, opts) => {
+    if (fmt === 'webp') return toWebpBlob(card, rankKey, opts);
+    if (fmt === 'mp4')  return toMp4Blob(card, rankKey, opts);
+    return toGifBlob(card, rankKey, opts);
+  };
+
+  /** The format this browser exports in. Resolved once — it can't change. */
+  let fmtProbe = null;
+  const format = () => (fmtProbe ??= (async () =>
+    (RG.webp && await RG.webp.supported()) ? 'webp' : 'gif')());
+
+  /**
+   * Export `card`, reusing an in-flight or finished render when there is one.
+   *
+   * `background: true` marks a speculative call — it renders at idle priority
+   * and stays quiet. A later foreground call for the same key attaches to that
+   * same job and promotes it to full speed, so a click that lands mid-warmup
+   * inherits the head start instead of racing a duplicate.
+   */
+  function exportBlob(card, rankKey, fmt, opts = {}) {
+    if (TUNING_OPTS.some(k => opts[k] !== undefined)) {
+      return encodeBlob(card, rankKey, fmt, opts);
+    }
+    const key = exportKey(card, rankKey, fmt);
+    let rec = exportCache.get(key);
+
+    if (rec) {
+      exportCache.delete(key);       // re-insert to keep eviction order honest
+    } else {
+      rec = { progress: 0, listeners: new Set(), pace: { background: !!opts.background } };
+      rec.promise = encodeBlob(card, rankKey, fmt, {
+        pace: rec.pace,
+        onProgress: p => {
+          rec.progress = p;
+          for (const fn of rec.listeners) fn(p);
+        },
+      });
+      // a failure must not be remembered as a result
+      rec.promise.catch(() => exportCache.delete(key));
+    }
+    exportCache.set(key, rec);
+    while (exportCache.size > EXPORT_CACHE_MAX) {
+      exportCache.delete(exportCache.keys().next().value);
+    }
+
+    if (!opts.background) {
+      rec.pace.background = false;    // promote: someone is waiting on this now
+      abandonSpeculative(key);        // and give it the machine to itself
+    }
+    if (opts.onProgress) {
+      rec.listeners.add(opts.onProgress);
+      if (rec.progress) opts.onProgress(rec.progress);   // don't restart at 0%
+      rec.promise.then(() => rec.listeners.delete(opts.onProgress),
+                       () => rec.listeners.delete(opts.onProgress));
+    }
+    return rec.promise;
+  }
+
+  /**
+   * Start rendering a card nobody has asked for yet.
+   *
+   * Called when the right-click menu opens, which is the strongest signal of
+   * intent available before the click itself. Returns nothing and swallows
+   * errors: a speculative render that fails is not the user's problem, and the
+   * real attempt will surface it.
+   */
+  function prerender(card, rankKey) {
+    // Exports are stamped with the signature; without one the render would be
+    // thrown away the moment the user is prompted for it.
+    if (!card || !rankKey || !(RG.state.signature || '').trim()) return;
+    format().then(fmt => {
+      const key = exportKey(card, rankKey, fmt);
+      if (exportCache.has(key)) return;      // already finished, or already going
+      abandonSpeculative();
+      speculating = key;
+      return exportBlob(card, rankKey, fmt, { background: true })
+        .finally(() => { if (speculating === key) speculating = null; });
+    }).catch(() => {});
+  }
 
   return { render, toGifBlob, toMp4Blob, toWebpBlob, animatable, filename,
+           exportBlob, prerender, format,
            TARGET_BYTES, MAX_BYTES, MP4_BITRATE, ART_SECONDS, MAX_FRAMES,
            // exposed for inspection: frame phases and durations, pre-render
            buildTimeline };

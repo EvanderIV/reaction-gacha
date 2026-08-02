@@ -87,6 +87,27 @@ body[data-theme="mtg"] {
 
 body { transition: background .4s ease, color .4s ease; }
 
+/* Nothing here is a document, so nothing here is selectable.
+
+   Clicking through a pack is repeated clicks in one spot, and the second one
+   is a double-click as far as the browser is concerned — which selects the
+   word under it. The cards themselves already opted out, but everything they
+   sit on top of (the counter, "PACK COMPLETE", the buttons that appear right
+   where you were clicking) did not, so the selection landed there instead and
+   Opera GX popped its Search/Copy/Snapshot bar over the card.
+
+   Applied to `body` rather than `#app` because the overlays, context menu and
+   modals are all siblings of it. Fields the user genuinely needs to copy out
+   of — the minted embed link above all — opt back in below. */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+input, textarea, [contenteditable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* ---------- TOP BAR ---------- */
 
 .topbar {
@@ -434,11 +455,29 @@ body[data-theme="mtg"] .cta-btn { color: #16100a; }
    THE CARD
    ============================================================ */
 
+/* ONE card design, drawn at whatever size it happens to be.
+
+   Every length inside the card is a multiple of `--u`, where 1u is one pixel of
+   the 230px reference design — so `calc(14.5 * var(--u))` still reads as "the
+   14.5px title". The card is a size container, so `u` tracks the card's real
+   width and the layout is resolution-independent: the 420px expanded preview,
+   a 258px grid tile and a 178px phone tile are the same card at three scales.
+
+   They used to be fixed px, which meant the expanded card kept grid-sized text
+   in a frame nearly twice as wide and read as sparse and under-filled. Note
+   that `cqw` in a container's OWN properties resolves against its ancestor
+   container, not itself — `--u` is declared here but only ever consumed by
+   descendants, where it resolves against this card. */
 .card {
   position: relative;
+  container-type: inline-size;
+  --u: calc(100cqw / 230);
   width: var(--card-w);
   aspect-ratio: 5 / 7;
-  border-radius: var(--radius);
+  /* Percentage radii resolve against the box's own width/height, so these two
+     figures stay a circular 14px-at-230 corner at every size without needing a
+     container unit — which the rule above can't use on itself anyway. */
+  border-radius: 6.087% / 4.348%;
   transform: perspective(1100px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) scale(var(--s, 1));
   transform-style: preserve-3d;
   transition: box-shadow .3s;
@@ -456,12 +495,19 @@ body[data-theme="mtg"] .cta-btn { color: #16100a; }
   border-radius: inherit;
   overflow: hidden;
   background: var(--card-frame);
-  border: 3px solid var(--card-edge);
+  border: calc(3 * var(--u)) solid var(--card-edge);
+  /* Browsers FLOOR border widths to whole pixels, so a 229.6px card computes
+     2.99 and paints 2 — visibly thinner than the 3 it was drawn at, and a
+     hairline border could truncate to nothing. Round instead. Declared after
+     the shorthand so an engine without round() keeps the plain calc. */
+  border-width: round(calc(3 * var(--u)), 1px);
   isolation: isolate;
 }
 body[data-theme="mtg"] .card-inner {
-  border-width: 2px;
-  box-shadow: inset 0 0 0 2px #16100a, inset 0 0 0 4px color-mix(in srgb, var(--card-edge) 55%, transparent);
+  border-width: calc(2 * var(--u));
+  border-width: round(calc(2 * var(--u)), 1px);
+  box-shadow: inset 0 0 0 calc(2 * var(--u)) #16100a,
+              inset 0 0 0 calc(4 * var(--u)) color-mix(in srgb, var(--card-edge) 55%, transparent);
 }
 
 /* body layout
@@ -471,8 +517,8 @@ body[data-theme="mtg"] .card-inner {
 .card-body {
   position: absolute; inset: 0; z-index: auto;
   display: flex; flex-direction: column;
-  padding: 8px;
-  gap: 6px;
+  padding: calc(8 * var(--u));
+  gap: calc(6 * var(--u));
 }
 
 /* Layer order inside .card-inner:
@@ -482,39 +528,47 @@ body[data-theme="mtg"] .card-inner {
      4 cosmic symbols
      5 text + boxes    (always on top, so the glint never hurts readability)
      6 pointer glare                                                        */
-.card-head, .card-usage, .card-stats, .card-sig {
+.card-head, .card-bottom, .card-usage, .card-stats, .card-sig {
   position: relative;
   z-index: 5;
 }
 
+/* Flavour text, stats and credit travel together. In the standard frame this
+   is a transparent pass-through that reproduces the old flat layout exactly;
+   in the full-art frame it becomes the one element carrying the scrim. */
+.card-bottom {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; gap: calc(6 * var(--u));
+}
+
 .card-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  padding: 4px 6px;
-  min-height: 30px;
+  display: flex; align-items: center; justify-content: space-between; gap: calc(6 * var(--u));
+  padding: calc(4 * var(--u)) calc(6 * var(--u));
+  min-height: calc(30 * var(--u));
 }
 .card-title {
   flex: 1; min-width: 0;   /* claim the space the smaller badge frees up */
   font-family: var(--font-card-title);
-  font-size: 14.5px; font-weight: 800; line-height: 1.1;
+  font-size: calc(14.5 * var(--u)); font-weight: 800; line-height: 1.1;
   color: var(--card-title-c);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-body[data-theme="mtg"] .card-title { font-weight: 700; letter-spacing: .3px; }
+body[data-theme="mtg"] .card-title { font-weight: 700; letter-spacing: calc(.3 * var(--u)); }
 
 /* Three-letter badge: deliberately compact so the title gets the width. */
 .type-pill {
   flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 30px;
-  padding: 2px 6px; border-radius: 5px;
-  font-size: 9.5px; font-weight: 800; letter-spacing: .8px;
+  min-width: calc(30 * var(--u));
+  padding: calc(2 * var(--u)) calc(6 * var(--u)); border-radius: calc(5 * var(--u));
+  font-size: calc(9.5 * var(--u)); font-weight: 800; letter-spacing: calc(.8 * var(--u));
   color: #fff;
   background: linear-gradient(160deg, var(--type-color), color-mix(in srgb, var(--type-color) 55%, #000));
   box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
   text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
 }
 body[data-theme="mtg"] .type-pill {
-  border-radius: 3px;
+  border-radius: calc(3 * var(--u));
   font-family: var(--font-card-title);
 }
 
@@ -523,14 +577,16 @@ body[data-theme="mtg"] .type-pill {
   z-index: 2;          /* above the frame foil, below the full-card foil */
   flex: none;
   height: 46%;
-  border-radius: 8px;
+  border-radius: calc(8 * var(--u));
   overflow: hidden;
-  border: 2px solid color-mix(in srgb, var(--card-edge) 80%, #000 10%);
+  border: calc(2 * var(--u)) solid color-mix(in srgb, var(--card-edge) 80%, #000 10%);
+  border-width: round(calc(2 * var(--u)), 1px);
   background: #0b0d12;
 }
-body[data-theme="mtg"] .card-art { border-radius: 3px; border-color: #0d0905; }
+body[data-theme="mtg"] .card-art { border-radius: calc(3 * var(--u)); border-color: #0d0905; }
 /* cover so art always fills its frame and crops, whatever its native aspect */
 .card-art img,
+.card-art canvas,
 .card-art video {
   width: 100%; height: 100%;
   object-fit: cover;
@@ -541,53 +597,57 @@ body[data-theme="mtg"] .card-art { border-radius: 3px; border-color: #0d0905; }
      tilt and click-to-expand fight the video element for the pointer. */
   pointer-events: none;
 }
-
-/* Chrome volunteers a picture-in-picture and a cast button over any video on
-   hover, even one with no controls attribute. They float above the artwork and
-   look like part of the card. The attributes in cards.js are the real fix;
-   these rules cover the overlays that aren't attribute-controlled. */
-.card-art video::-webkit-media-controls,
-.card-art video::-webkit-media-controls-enclosure,
-.card-art video::-webkit-media-controls-panel,
-.card-art video::-webkit-media-controls-start-playback-button,
-.card-art video::-webkit-media-controls-overlay-play-button {
-  display: none !important;
-  -webkit-appearance: none;
+/* Opt-out for art whose edges carry meaning (cards.php `fit => contain`):
+   show the whole image and letterbox it against the art window's own backdrop
+   instead of cropping. Exports letterbox to the same colour. */
+.card-art[data-fit="contain"] img,
+.card-art[data-fit="contain"] canvas,
+.card-art[data-fit="contain"] video {
+  object-fit: contain;
 }
+
+/* No ::-webkit-media-controls rules here any more: video art is painted into a
+   <canvas> from a detached video element (see cards.js), so the browser has no
+   media element in the page to hang controls on. Those rules only ever covered
+   Chromium's own overlays anyway — Opera GX's video pop-out button is
+   proprietary and ignored both them and disablePictureInPicture. */
 
 .card-usage {
   flex: 1;
   font-family: var(--font-card-body);
-  font-size: 11px; line-height: 1.42;
+  font-size: calc(11 * var(--u)); line-height: 1.42;
   color: var(--card-box-text);
   background: var(--card-box-bg);
-  border: 1.5px solid var(--card-box-border);
-  border-radius: 8px;
-  padding: 7px 9px;
+  border: calc(1.5 * var(--u)) solid var(--card-box-border);
+  border-width: round(calc(1.5 * var(--u)), 1px);
+  border-radius: calc(8 * var(--u));
+  padding: calc(7 * var(--u)) calc(9 * var(--u));
   overflow: hidden;
   display: flex; align-items: center;
 }
-body[data-theme="mtg"] .card-usage { border-radius: 3px; font-style: italic; }
+body[data-theme="mtg"] .card-usage { border-radius: calc(3 * var(--u)); font-style: italic; }
 
 .card-stats {
   flex: none;
-  display: flex; align-items: center; gap: 5px;
-  padding: 2px 2px 0;
+  display: flex; align-items: center; gap: calc(5 * var(--u));
+  padding: calc(2 * var(--u)) calc(2 * var(--u)) 0;
 }
 .stat {
   flex: 1; text-align: center;
-  font-size: 9.5px; font-weight: 800; letter-spacing: .6px;
-  padding: 4px 0; border-radius: 6px;
+  font-size: calc(9.5 * var(--u)); font-weight: 800; letter-spacing: calc(.6 * var(--u));
+  padding: calc(4 * var(--u)) 0; border-radius: calc(6 * var(--u));
   color: var(--card-box-text);
   background: color-mix(in srgb, var(--card-box-bg) 70%, transparent);
-  border: 1px solid var(--card-box-border);
+  border: calc(1 * var(--u)) solid var(--card-box-border);
+  border-width: round(calc(1 * var(--u)), 1px);
 }
-.stat b { font-size: 12px; display: block; }
+.stat b { font-size: calc(12 * var(--u)); display: block; }
 .rarity-gem {
-  flex: none; width: 20px; height: 20px; border-radius: 50%;
+  flex: none; width: calc(20 * var(--u)); height: calc(20 * var(--u)); border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 10px;
-  border: 1px solid var(--card-box-border);
+  font-size: calc(10 * var(--u));
+  border: calc(1 * var(--u)) solid var(--card-box-border);
+  border-width: round(calc(1 * var(--u)), 1px);
   background: var(--card-box-bg);
 }
 .rarity-gem[data-r="standard"]::after { content: "●"; color: #98a2b3; }
@@ -599,10 +659,10 @@ body[data-theme="mtg"] .card-usage { border-radius: 3px; font-style: italic; }
 /* illustrator credit — matches the watermark burned into exports */
 .card-sig {
   flex: none;
-  padding: 3px 4px 0;
-  font-size: 7.5px;
+  padding: calc(3 * var(--u)) calc(4 * var(--u)) 0;
+  font-size: calc(7.5 * var(--u));
   font-weight: 600;
-  letter-spacing: .3px;
+  letter-spacing: calc(.3 * var(--u));
   color: color-mix(in srgb, var(--card-box-text) 62%, transparent);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -617,7 +677,7 @@ body[data-theme="mtg"] .card-sig { font-family: var(--font-card-title); font-sty
 }
 .card.full .card-head {
   position: absolute; top: 0; left: 0; right: 0; z-index: 5;
-  padding: 10px 10px 18px;
+  padding: calc(10 * var(--u)) calc(10 * var(--u)) calc(18 * var(--u));
   background: linear-gradient(180deg, rgba(0, 0, 0, .68), transparent);
 }
 .card.full .type-pill { box-shadow: 0 1px 5px rgba(0, 0, 0, .75); }
@@ -628,28 +688,40 @@ body[data-theme="mtg"] .card-sig { font-family: var(--font-card-title); font-sty
   color: #fff;
   text-shadow: 0 1px 2px rgba(0, 0, 0, .95), 0 2px 10px rgba(0, 0, 0, .85);
 }
+/* ONE scrim for the whole bottom stack.
+   These used to be three separately positioned bands (bottom: 48px / 14px / 0)
+   each painting its own rgba(0,0,0,.72). The offsets were hand-tuned and did
+   not actually meet: a few pixels of bright artwork showed through between the
+   stats and the credit line, reading as a stray horizontal rule, and the gaps
+   moved whenever a font size changed. Letting the stack size itself and
+   carrying the backdrop on the parent makes seams impossible by construction. */
+.card.full .card-bottom {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+  flex: none;
+  gap: calc(4 * var(--u));
+  padding: calc(26 * var(--u)) calc(10 * var(--u)) calc(4 * var(--u));
+  background: linear-gradient(0deg,
+              rgba(0, 0, 0, .82) 0%, rgba(0, 0, 0, .78) 62%, transparent 100%);
+}
 .card.full .card-usage {
-  /* clears the stats row plus the credit line beneath it */
-  position: absolute; left: 0; right: 0; bottom: 48px; z-index: 5;
-  background: linear-gradient(0deg, rgba(0, 0, 0, .72) 60%, transparent);
+  flex: none;
+  background: none;
   border: none; border-radius: 0;
   color: #f2f4f8;
-  padding: 22px 12px 8px;
+  padding: 0;
   text-shadow: 0 1px 2px rgba(0, 0, 0, .95), 0 2px 8px rgba(0, 0, 0, .8);
   /* grows upward, so cap it before it eats into the artwork */
-  max-height: 44%;
+  max-height: 38%;
   display: block;
   overflow: hidden;
 }
 .card.full .card-stats {
-  position: absolute; left: 0; right: 0; bottom: 14px; z-index: 5;
-  padding: 0 10px 4px;
-  background: rgba(0, 0, 0, .72);
+  padding: 0;
+  background: none;
 }
 .card.full .card-sig {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
-  padding: 0 10px 3px;
-  background: rgba(0, 0, 0, .72);
+  padding: 0;
+  background: none;
   color: rgba(255, 255, 255, .78);
   text-shadow: 0 1px 3px rgba(0, 0, 0, .9);
 }
@@ -667,10 +739,12 @@ body[data-theme="mtg"] .card-sig { font-family: var(--font-card-title); font-sty
 .card.locked { box-shadow: none; }
 .locked-face {
   position: absolute; inset: 0; z-index: 3;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-  color: var(--text-dim); font-weight: 800; letter-spacing: 3px; font-size: 14px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: calc(10 * var(--u));
+  color: var(--text-dim); font-weight: 800;
+  letter-spacing: calc(3 * var(--u)); font-size: calc(14 * var(--u));
 }
-.locked-face span { font-size: 46px; filter: grayscale(1); opacity: .5; }
+.locked-face span { font-size: calc(46 * var(--u)); filter: grayscale(1); opacity: .5; }
 
 /* ============================================================
    FOIL / RARITY EFFECTS
@@ -683,32 +757,84 @@ body[data-theme="mtg"] .card-sig { font-family: var(--font-card-title); font-sty
   border-radius: inherit;
 }
 
+/* The sheen layer is an oversized gradient slid around by the pointer.
+   COVERAGE IS THE WHOLE GAME HERE. For a background image bigger than its box,
+   `background-position: P%` puts the image at an offset of -(S-100)·P/100, so
+   the image only still covers the box while P stays within 0-100%. Past that
+   it slides off its own box, the browser tiles it, and the tile edge crosses
+   the card as a hard seam — which is exactly what a 1.6 multiplier used to do
+   for any --px or --py above 62.5, i.e. the lower-right corner.
+   So the multiplier is 1: P can never leave the safe range, whatever S is.
+   Travel is bought back with a larger S instead (460% gives 360% of movement,
+   against the 384% the broken version had), and the stripe stops are scaled by
+   340/460 so the bands stay the width they were tuned at. */
 .foil {
   background:
     radial-gradient(circle at calc(var(--px, 50) * 1%) calc(var(--py, 35) * 1%),
       rgba(255, 255, 255, .8) 0%, rgba(255, 255, 255, 0) 42%),
     repeating-linear-gradient(115deg,
       rgba(255, 80, 120, .55) 0%,
-      rgba(255, 205, 80, .55) 7%,
-      rgba(120, 255, 170, .55) 14%,
-      rgba(90, 200, 255, .55) 21%,
-      rgba(190, 120, 255, .55) 28%,
-      rgba(255, 80, 120, .55) 35%);
-  background-size: 220% 220%, 340% 340%;
+      rgba(255, 205, 80, .55) 5.17%,
+      rgba(120, 255, 170, .55) 10.35%,
+      rgba(90, 200, 255, .55) 15.52%,
+      rgba(190, 120, 255, .55) 20.7%,
+      rgba(255, 80, 120, .55) 25.87%);
+  background-size: 220% 220%, 460% 460%;
   background-position:
     center,
-    calc(var(--px, 50) * 1.6%) calc(var(--py, 50) * 1.6%);
+    calc(var(--px, 50) * 1%) calc(var(--py, 50) * 1%);
+  /* Belt and braces: with the position bounded above there is nothing left to
+     tile, and no-repeat means a future regression shows up immediately instead
+     of as a seam subtle enough to need reporting. */
+  background-repeat: no-repeat;
   mix-blend-mode: color-dodge;
   opacity: .78;
-  filter: saturate(1.5) brightness(1.02);
+  /* per-layer, so the artwork foil can be more saturated than the frame
+     foil without forking the hue animation below */
+  --foil-sat: 1.5;
+  filter: saturate(var(--foil-sat)) brightness(1.02);
   animation: foil-hue 9s linear infinite;
 }
 /* light frame (Pokémon): color-dodge blows out to white, use a glossy film instead */
 body[data-theme="pokemon"] .foil { mix-blend-mode: normal; opacity: .48; }
+/* Foil over ARTWORK — screen, never color-dodge.
+   color-dodge is base / (1 - blend). It clips to pure white as soon as the
+   blend approaches 1, and it MULTIPLIES whatever noise the source already has:
+   the highlight below peaked at .8, i.e. a 5x gain on the grain in a dark,
+   heavily compressed reaction GIF. The result read as harsh speckle and
+   crushed blacks rather than as foil. Screen only ever lightens, so it adds
+   sheen without amplifying anything.
+
+   Measured on popcorn-time (dark, grainy source): high-frequency energy 11.5
+   -> 5.8, and mean brightness lands near what the canvas exporter produces
+   (87 vs 79) instead of blowing past it. The iridescence lost with the
+   division is bought back with --foil-sat, which saturates the foil layer
+   BEFORE it blends and so cannot touch the artwork's noise.
+
+   Frame foil is deliberately untouched: it sits over flat card stock, which
+   has no grain to amplify. */
 body[data-theme="pokemon"] .card .foil-art,
-body[data-theme="pokemon"] .card.full .foil { mix-blend-mode: color-dodge; opacity: .7; }
+body[data-theme="pokemon"] .card.full .foil-full,
+body[data-theme="mtg"] .card .foil-art,
+body[data-theme="mtg"] .card.full .foil-full {
+  mix-blend-mode: screen;
+  opacity: .5;
+  --foil-sat: 2;
+  /* background-image only — the shorthand would reset the size/position set
+     on .foil, which is what makes the sheen track the pointer */
+  background-image:
+    radial-gradient(circle at calc(var(--px, 50) * 1%) calc(var(--py, 35) * 1%),
+      rgba(255, 255, 255, .4) 0%, rgba(255, 255, 255, 0) 42%),
+    repeating-linear-gradient(115deg,
+      rgba(255, 80, 120, .5) 0%,
+      rgba(255, 205, 80, .5) 5.17%,
+      rgba(120, 255, 170, .5) 10.35%,
+      rgba(90, 200, 255, .5) 15.52%,
+      rgba(190, 120, 255, .5) 20.7%,
+      rgba(255, 80, 120, .5) 25.87%);
+}
 @keyframes foil-hue {
-  to { filter: saturate(1.5) brightness(1.02) hue-rotate(360deg); }
+  to { filter: saturate(var(--foil-sat)) brightness(1.02) hue-rotate(360deg); }
 }
 
 /* reverse holo: foil sits UNDER the body — visible everywhere except the

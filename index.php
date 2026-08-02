@@ -11,13 +11,49 @@ $videoExts = ['mp4' => 'video/mp4', 'webm' => 'video/webm'];
 foreach ($db['cards'] as &$card) {
     $card['img'] = null;
     $card['vid'] = null;
-    foreach ($exts as $ext) {
-        $rel = 'assets/images/' . $card['id'] . '.' . $ext;
-        if (file_exists(__DIR__ . '/' . $rel)) {
-            $card['img'] = $rel;
-            $card['vid'] = $videoExts[$ext] ?? null;
-            break;
+
+    /* A DIRECTORY of art means "pick one at random" — one card, many faces.
+       The choice is made here, once per request, rather than per render: the
+       preview, the expanded view and anything exported all read $card['img'],
+       so a per-render pick would let the card you are looking at disagree with
+       the file you just downloaded. Reload for a different one. */
+    $dir = __DIR__ . '/assets/images/' . $card['id'];
+    if (is_dir($dir)) {
+        $pool = [];
+        foreach (scandir($dir) ?: [] as $file) {
+            if ($file[0] === '.') continue;
+            // lowercased compare: Debian's filesystem is case-sensitive, a .JPG
+            // that works locally on Windows would silently vanish in production
+            if (in_array(strtolower(pathinfo($file, PATHINFO_EXTENSION)), $exts, true)) {
+                $pool[] = $file;
+            }
         }
+        if ($pool) {
+            sort($pool);                       // stable order, so the pick is the only variable
+            $pick = $pool[random_int(0, count($pool) - 1)];
+            $ext  = strtolower(pathinfo($pick, PATHINFO_EXTENSION));
+            $card['img'] = 'assets/images/' . $card['id'] . '/' . rawurlencode($pick);
+            $card['vid'] = $videoExts[$ext] ?? null;
+            // filenames carry the joke, so make the chosen one addressable
+            $card['variant']  = ucwords(str_replace('-', ' ', pathinfo($pick, PATHINFO_FILENAME)));
+            $card['variants'] = count($pool);
+        }
+    }
+
+    if ($card['img'] === null) {
+        foreach ($exts as $ext) {
+            $rel = 'assets/images/' . $card['id'] . '.' . $ext;
+            if (file_exists(__DIR__ . '/' . $rel)) {
+                $card['img'] = $rel;
+                $card['vid'] = $videoExts[$ext] ?? null;
+                break;
+            }
+        }
+    }
+
+    // {variant} in flavour text resolves to whichever art was drawn
+    if (str_contains($card['usage'], '{variant}')) {
+        $card['usage'] = str_replace('{variant}', $card['variant'] ?? 'Speculation', $card['usage']);
     }
 }
 unset($card);
@@ -128,12 +164,18 @@ $configJson = json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICO
     <!-- ============ COLLECTION ============ -->
     <section id="tab-collection" class="tab-panel">
       <div class="coll-toolbar">
-        <input id="coll-search" class="coll-search" type="search" placeholder="Fuzzy search cards…" autocomplete="off">
+        <input id="coll-search" class="coll-search" type="search" placeholder="Search cards…" autocomplete="off">
         <select id="coll-sort" class="coll-sort" aria-label="Sort collection">
           <option value="alpha">Alphabetical</option>
           <option value="rarity">Rarity</option>
           <option value="type">Type</option>
           <option value="stats">Stats</option>
+        </select>
+        <!-- Tier the grid shows every card at. The rarity options are appended
+             by collection.js from RG.RARITIES so this can't drift out of step
+             with the tier list; only the default lives here. -->
+        <select id="coll-display" class="coll-sort" aria-label="Show cards as">
+          <option value="owned">Highest owned</option>
         </select>
       </div>
       <div id="coll-grid" class="coll-grid"></div>
